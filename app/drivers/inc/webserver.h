@@ -19,30 +19,30 @@ class webserver {
  public:
   webserver();
 
-  static void wifi_init_ap();
-  static void wifi_init_sta();
+  void wifi_init_ap();
+  void wifi_init_sta();
 
+  void webserver_init();
   static void start_webserver();
   static esp_err_t stop_webserver();
   // void save_credentials(const char* ssid, const char* password);
   // void webserver_event_handler(void* arg, esp_websocket_event_data_t*
   // event);
-  static esp_err_t hello_get_handler(httpd_req_t* req);
+
+  static esp_err_t handle_ws_req(httpd_req_t* req);
   static void wifi_event_handler(void* arg,
                                  esp_event_base_t event_base,
                                  int32_t event_id,
                                  void* event_data);
 
+  //  private:
   char ssid_buffer[32];
   char password_buffer[64];
-
-  nvs_handle_t nvs_handle;
 };
 
-static const httpd_uri_t hello = {.uri = "/hello",
-                                  .method = HTTP_GET,
-                                  .handler = webserver::hello_get_handler,
-                                  /* Let's pass response string in user
-                                   * context to demonstrate it's usage */
-                                  .user_ctx = (void*)"Hello, world!"};
+// static const httpd_uri_t uri_get = {.uri = "/",
+//                                     .method = HTTP_GET,
+//                                     .handler = get_req_handler,
+//                                     .user_ctx = NULL};
+
 }  // namespace network
