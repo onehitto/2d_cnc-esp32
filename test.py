@@ -1,8 +1,9 @@
 import websocket
 import json
 
-ws_url = "ws://192.168.1.2:8080/ws"  # Replace with your server's URL
-data = {"key": "value", "action": "send"}
+# ws_url = "ws://192.168.1.2:8080/ws"  # Replace with your server's URL
+ws_url = "ws://192.168.4.1:8080/ws_setcreadentials"  # Replace with your server's URL
+data = {"ssid": "ssid", "password": "password"}
 
 # Function to log and send data
 def send_data(ws, data, opcode=websocket.ABNF.OPCODE_TEXT):

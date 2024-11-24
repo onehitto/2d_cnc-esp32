@@ -8,6 +8,9 @@ static wifi_config_t wifi_config = {};
 static httpd_handle_t server = NULL;
 static int count_try = 0;
 
+char webserver::ssid_buffer[32] = {0};  // Initialize with null characters
+char webserver::password_buffer[64] = {0};
+
 struct async_resp_arg {
   httpd_handle_t hd;
   int fd;
@@ -15,13 +18,15 @@ struct async_resp_arg {
 httpd_ws_frame_t pong_pkt = {.type = HTTPD_WS_TYPE_PONG,
                              .payload = nullptr,
                              .len = 0};
-static httpd_uri_t ws = {.uri = "/ws",
-                         .method = HTTP_GET,
-                         .handler = webserver::handle_ws_req,
-                         .user_ctx = NULL,
-                         .is_websocket = true,
-                         .handle_ws_control_frames = true,
-                         .supported_subprotocol = NULL};
+static httpd_uri_t ws_setcreadentials = {
+    .uri = "/ws_setcreadentials",
+    .method = HTTP_GET,
+    .handler = webserver::handle_ws_setcreadentials,
+    .user_ctx = NULL,
+    .is_websocket = true,
+    .handle_ws_control_frames = true,
+    .supported_subprotocol = NULL};
+
 webserver::webserver() {}
 
 void webserver::webserver_init() {
@@ -34,29 +39,28 @@ void webserver::webserver_init() {
   }
   ESP_ERROR_CHECK(ret);
 
-  // nvs_handle_t nvs_handle;
-  // // 2- check if the Wi-Fi credentials are stored in NVS
-  // ret = nvs_open("wifi_config", NVS_READONLY, &nvs_handle);
-  // if (ret == ESP_OK) {
-  //   size_t ssid_len = sizeof(ssid_buffer);
-  //   size_t password_len = sizeof(password_buffer);
+  nvs_handle_t nvs_handle;
+  // 2- check if the Wi-Fi credentials are stored in NVS
+  ret = nvs_open("wifi_config", NVS_READONLY, &nvs_handle);
+  if (ret == ESP_OK) {
+    size_t ssid_len = sizeof(ssid_buffer);
+    size_t password_len = sizeof(password_buffer);
 
-  //   if (nvs_get_str(nvs_handle, "ssid", ssid_buffer, &ssid_len) == ESP_OK &&
-  //       nvs_get_str(nvs_handle, "password", password_buffer, &password_len)
-  //       ==
-  //           ESP_OK) {
-  //     ESP_LOGI(TAG, "Found stored Wi-Fi credentials. SSID: %s", ssid_buffer);
-  //     nvs_close(nvs_handle);
-  wifi_init_sta();  // Try to connect in STA mode
-  //   } else {
-  //     ESP_LOGI(TAG, "No Wi-Fi credentials found. Starting in AP mode.");
-  //     nvs_close(nvs_handle);
-  //     wifi_init_ap();  // Start in AP mode
-  //   }
-  // } else {
-  //   ESP_LOGI(TAG, "Failed to open NVS. Starting in AP mode.");
-  //   wifi_init_ap();  // Start in AP mode
-  // }
+    if (nvs_get_str(nvs_handle, "ssid", ssid_buffer, &ssid_len) == ESP_OK &&
+        nvs_get_str(nvs_handle, "password", password_buffer, &password_len) ==
+            ESP_OK) {
+      ESP_LOGI(TAG, "Found stored Wi-Fi credentials. SSID: %s", ssid_buffer);
+      nvs_close(nvs_handle);
+      wifi_init_sta();  // Try to connect in STA mode
+    } else {
+      ESP_LOGI(TAG, "No Wi-Fi credentials found. Starting in AP mode.");
+      nvs_close(nvs_handle);
+      wifi_init_ap();  // Start in AP mode
+    }
+  } else {
+    ESP_LOGI(TAG, "Failed to open NVS. Starting in AP mode.");
+    wifi_init_ap();  // Start in AP mode
+  }
 }
 
 void webserver::wifi_init_sta() {
@@ -118,7 +122,7 @@ void webserver::wifi_init_ap() {
   ESP_LOGI(TAG, "AP mode initialized. SSID: %s", wifi_config.ap.ssid);
 }
 
-void webserver::start_webserver() {
+void webserver::start_webserver(wifi_mode_t mode) {
   /* Generate default configuration */
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   server = NULL;
@@ -129,8 +133,8 @@ void webserver::start_webserver() {
   if (httpd_start(&server, &config) == ESP_OK) {
     /* Register URI handlers */
     ESP_LOGI(TAG, "Registering URI handlers");
-    // httpd_register_uri_handler(server, &uri_get);
-    httpd_register_uri_handler(server, &ws);
+    if (mode == WIFI_MODE_AP)
+      httpd_register_uri_handler(server, &ws_setcreadentials);
     return;
   }
   ESP_LOGI(TAG, "Error starting server!");
@@ -143,9 +147,9 @@ esp_err_t webserver::stop_webserver() {
 
 std::string message_buffer;
 
-esp_err_t webserver::handle_ws_req(httpd_req_t* req) {
+esp_err_t webserver::handle_ws_setcreadentials(httpd_req_t* req) {
   if (req->method == HTTP_GET) {
-    ESP_LOGI(TAG, "Handshake done, the new connection was opened");
+    ESP_LOGD(TAG, "Handshake done, the new connection was opened");
     return ESP_OK;
   }
 
@@ -160,7 +164,7 @@ esp_err_t webserver::handle_ws_req(httpd_req_t* req) {
     return ret;
   }
 
-  ESP_LOGI(TAG, "WebSocket frame type: %d, length: %d, final: %d", ws_pkt.type,
+  ESP_LOGD(TAG, "WebSocket frame type: %d, length: %d, final: %d", ws_pkt.type,
            ws_pkt.len, ws_pkt.final);
 
   // Allocate memory for the payload
@@ -197,33 +201,33 @@ esp_err_t webserver::handle_ws_req(httpd_req_t* req) {
   // Handle frame types
   switch (ws_pkt.type) {
     case HTTPD_WS_TYPE_CONTINUE:
-      ESP_LOGI(TAG, "Continuation WebSocket frame received");
+      ESP_LOGD(TAG, "Continuation WebSocket frame received");
       message_buffer += (char*)ws_pkt.payload;  // Append to the buffer
       break;
     case HTTPD_WS_TYPE_TEXT:
-      ESP_LOGI(TAG, "Text WebSocket frame received");
+      ESP_LOGD(TAG, "Text WebSocket frame received");
       message_buffer = (char*)ws_pkt.payload;  // Start a new message
       break;
 
     case HTTPD_WS_TYPE_BINARY:
-      ESP_LOGI(TAG, "Binary WebSocket frame received");
+      ESP_LOGD(TAG, "Binary WebSocket frame received");
       ESP_LOG_BUFFER_HEX(TAG, ws_pkt.payload, ws_pkt.len);
       break;
 
     case HTTPD_WS_TYPE_CLOSE:
-      ESP_LOGI(TAG, "Close WebSocket frame received. Cleaning up.");
+      ESP_LOGD(TAG, "Close WebSocket frame received. Cleaning up.");
       free(ws_pkt.payload);
       return ESP_OK;
 
     case HTTPD_WS_TYPE_PING:
-      ESP_LOGI(TAG, "Ping WebSocket frame received");
+      ESP_LOGD(TAG, "Ping WebSocket frame received");
       pong_pkt.payload = ws_pkt.payload;
       pong_pkt.len = ws_pkt.len;
       httpd_ws_send_frame(req, &pong_pkt);
       break;
 
     case HTTPD_WS_TYPE_PONG:
-      ESP_LOGI(TAG, "Pong WebSocket frame received");
+      ESP_LOGD(TAG, "Pong WebSocket frame received");
       break;
 
     default:
@@ -234,8 +238,10 @@ esp_err_t webserver::handle_ws_req(httpd_req_t* req) {
 
   // If this is the final frame, process the full message
   if (ws_pkt.final) {
-    ESP_LOGI(TAG, "Full WebSocket message received: %s",
+    ESP_LOGD(TAG, "Full WebSocket message received: %s",
              message_buffer.c_str());
+    // Process the message here
+    process_creadentials_msg(message_buffer);
     message_buffer.clear();  // Clear buffer for the next message
   }
 
@@ -245,6 +251,36 @@ esp_err_t webserver::handle_ws_req(httpd_req_t* req) {
   }
 
   return ESP_OK;
+}
+
+void webserver::process_creadentials_msg(std::string& message_buffer) {
+  cJSON* root = cJSON_Parse(message_buffer.c_str());
+  if (root == nullptr) {
+    ESP_LOGE(TAG, "Failed to parse JSON");
+  } else {
+    // Extract "ssid"
+    cJSON* ssid_json = cJSON_GetObjectItem(root, "ssid");
+    if (cJSON_IsString(ssid_json) && (ssid_json->valuestring != nullptr)) {
+      snprintf(ssid_buffer, sizeof(ssid_buffer), "%s",
+               ssid_json->valuestring);  // Assign value to the variable
+      ESP_LOGI(TAG, "SSID: %s", ssid_buffer);
+    } else {
+      ESP_LOGW(TAG, "SSID key is missing or invalid");
+    }
+
+    // Extract "password"
+    cJSON* password_json = cJSON_GetObjectItem(root, "password");
+    if (cJSON_IsString(password_json) &&
+        (password_json->valuestring != nullptr)) {
+      snprintf(password_buffer, sizeof(password_buffer), "%s",
+               password_json->valuestring);  // Assign value to the variable
+      ESP_LOGI(TAG, "Password: %s", password_buffer);
+    } else {
+      ESP_LOGW(TAG, "Password key is missing or invalid");
+    }
+    // Free the JSON object
+    cJSON_Delete(root);
+  }
 }
 
 void webserver::wifi_event_handler(void* arg,
@@ -265,18 +301,22 @@ void webserver::wifi_event_handler(void* arg,
       wifi_event_sta_connected_t* event =
           (wifi_event_sta_connected_t*)event_data;
       ESP_LOGI(TAG, "Connected to Wi-Fi. SSID: %s", event->ssid);
+    } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+      start_webserver(WIFI_MODE_AP);
+    } else {
+      ESP_LOGI(TAG, "EVENT %ld ", event_id);
     }
   } else if (event_base == IP_EVENT) {
     if (event_id == IP_EVENT_STA_GOT_IP) {
       ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
       ESP_LOGI(TAG, "Got IP address: " IPSTR, IP2STR(&event->ip_info.ip));
-
-      start_webserver();
+      start_webserver(WIFI_MODE_STA);
     }
   }
 }
 
-// void webserver::save_credentials(const char* ssid, const char* password) {
+// void webserver::save_credentials(const char* ssid, const char* password)
+// {
 //   nvs_handle_t nvs_handle;
 //   ESP_ERROR_CHECK(nvs_open("wifi_config", NVS_READWRITE, &nvs_handle));
 
