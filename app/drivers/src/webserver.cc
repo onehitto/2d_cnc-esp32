@@ -137,6 +137,8 @@ void webserver::wifi_init_ap() {
   wifi_config.ap.max_connection = 4;
   wifi_config.ap.authmode = WIFI_AUTH_OPEN;
   wifi_config.ap.ssid_hidden = 0;
+  wifi_config.ap.beacon_interval = 100;
+  wifi_config.ap.channel = 1;
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
