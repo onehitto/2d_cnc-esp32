@@ -7,20 +7,34 @@ namespace network {
 wifi_config_t webserver::wifi_config = {};
 httpd_handle_t webserver::server = NULL;
 esp_netif_t* webserver::wifi_esp_netif = NULL;
+
+static esp_event_handler_instance_t instance_any_id;
+static esp_event_handler_instance_t instance_got_ip;
+
 int webserver::count_try = 0;
 
 char webserver::ssid_buffer[32] = {0};  // Initialize with null characters
 char webserver::password_buffer[64] = {0};
 bool webserver::credentials_valid = false;
 
-httpd_ws_frame_t pong_pkt = {.type = HTTPD_WS_TYPE_PONG,
+httpd_ws_frame_t pong_pkt = {.final = true,
+                             .fragmented = false,
+                             .type = HTTPD_WS_TYPE_PONG,
                              .payload = nullptr,
                              .len = 0};
 httpd_ws_frame_t close_frame = {
+    .final = true,
+    .fragmented = false,
     .type = HTTPD_WS_TYPE_CLOSE,  // WebSocket close frame type
     .payload = NULL,              // No payload for a simple close frame
     .len = 0,                     // Length of the payload
 };
+httpd_ws_frame_t hello_frame = {.final = true,
+                                .fragmented = false,
+                                .type = HTTPD_WS_TYPE_TEXT,
+                                .payload = nullptr,
+                                .len = 0};
+
 static httpd_uri_t ws_setcreadentials = {
     .uri = "/ws_setcreadentials",
     .method = HTTP_GET,
@@ -88,9 +102,11 @@ void webserver::wifi_init_sta() {
 
   // Register event handlers
   esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                      &wifi_event_handler, nullptr, nullptr);
+                                      &wifi_event_handler, nullptr,
+                                      &instance_any_id);
   esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                      &wifi_event_handler, nullptr, nullptr);
+                                      &wifi_event_handler, nullptr,
+                                      &instance_got_ip);
 
   wifi_config_t wifi_config = {};
   strncpy((char*)wifi_config.sta.ssid, ssid_buffer,
@@ -126,7 +142,8 @@ void webserver::wifi_init_ap() {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
 
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
-      WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr, nullptr));
+      WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr,
+      &instance_any_id));
 
   ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -136,15 +153,18 @@ void webserver::wifi_init_ap() {
 void webserver::start_webserver(wifi_mode_t mode) {
   /* Generate default configuration */
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  server = NULL;
   config.lru_purge_enable = true;
+  if (server != NULL) {
+    ESP_LOGW(TAG, "Web server is already running");
+    return;
+  }
 
   if (mode == WIFI_MODE_AP) {
     config.server_port = 4397;  // Port for AP mode
   } else {
     config.server_port = 4398;  // Port for STA mode
   }
-
+  ESP_LOGI(TAG, "Web server starting on port: %d", config.server_port);
   /* Start the httpd server */
   if (httpd_start(&server, &config) == ESP_OK) {
     /* Register URI handlers */
@@ -160,9 +180,17 @@ void webserver::start_webserver(wifi_mode_t mode) {
 
 esp_err_t webserver::stop_webserver() {
   // Stop the httpd server
+  if (server == NULL) {
+    ESP_LOGW(TAG, "Web server is not running");
+    return ESP_OK;
+  }
   ESP_LOGI(TAG, "Stopping webserver...");
   esp_err_t ret = httpd_stop(server);
-  server = nullptr;
+  if (ret == ESP_OK) {
+    server = NULL;
+  } else {
+    ESP_LOGE(TAG, "Failed to stop webserver: %s", esp_err_to_name(ret));
+  }
   return ret;
 }
 
@@ -245,6 +273,12 @@ esp_err_t webserver::handle_ws_setcreadentials(httpd_req_t* req) {
           ESP_LOGE(TAG, "Failed to create server stop task.");
           return ESP_ERR_NO_MEM;
         }
+      }
+      if (httpd_ws_send_frame(req, &close_frame) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send WebSocket close frame: %s",
+                 esp_err_to_name(ret));
+      } else {
+        ESP_LOGI(TAG, "WebSocket close frame sent successfully.");
       }
       return ESP_OK;
 
@@ -386,13 +420,11 @@ esp_err_t webserver::handle_ws_hello(httpd_req_t* req) {
   }
 
   const char* response = "Hello world from ESP32 WebSocket server!";
-  httpd_ws_frame_t ws_response = {
-      .type = HTTPD_WS_TYPE_TEXT,
-      .payload = (uint8_t*)response,
-      .len = strlen(response),
-  };
 
-  if (httpd_ws_send_frame(req, &ws_response) != ESP_OK) {
+  hello_frame.payload = (uint8_t*)response;
+  hello_frame.len = strlen(response);
+
+  if (httpd_ws_send_frame(req, &hello_frame) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to send WebSocket response: %s",
              esp_err_to_name(ret));
   } else {
@@ -454,7 +486,8 @@ void webserver::wifi_event_handler(void* arg,
   if (event_base == WIFI_EVENT) {
     if (event_id == WIFI_EVENT_AP_START) {
       ESP_LOGI(TAG, "Wi-Fi started in AP mode");
-      esp_wifi_connect();
+      start_webserver(WIFI_MODE_AP);
+      // esp_wifi_connect();
     } else if (event_id == WIFI_EVENT_STA_START) {
       ESP_LOGI(TAG, "Wi-Fi started, attempting to connect...");
       esp_wifi_connect();
@@ -473,14 +506,17 @@ void webserver::wifi_event_handler(void* arg,
         esp_wifi_stop();
         ESP_LOGI(TAG, "Destroying default Wi-Fi interface...");
         esp_netif_destroy_default_wifi(wifi_esp_netif);
+        ESP_ERROR_CHECK(esp_event_handler_instance_unregister(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id));
+        ESP_ERROR_CHECK(esp_event_handler_instance_unregister(
+            WIFI_EVENT, IP_EVENT_STA_GOT_IP, instance_got_ip));
+        ESP_LOGI(TAG, "Unregistered Wi-Fi event handlers.");
         wifi_init_ap();  // Switch to AP mode
       }
     } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
       wifi_event_sta_connected_t* event =
           (wifi_event_sta_connected_t*)event_data;
       ESP_LOGI(TAG, "Connected to Wi-Fi. SSID: %s", event->ssid);
-    } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
-      start_webserver(WIFI_MODE_AP);
     } else {
       ESP_LOGI(TAG, "EVENT %ld ", event_id);
     }
@@ -507,8 +543,20 @@ void webserver::save_credentials() {
 
 void webserver::restart_as_STA(void* parameter) {
   // Cast parameter if needed (e.g., pass the server handle or other context)
-  vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for 1 second
-  esp_restart();
+  ESP_LOGI(TAG, "Restarting as STA mode...");
+
+  ESP_ERROR_CHECK(esp_event_handler_instance_unregister(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id));
+  ESP_LOGI(TAG, "Unregistered Wi-Fi event handlers.");
+
+  vTaskDelay(pdMS_TO_TICKS(100));
+  ESP_ERROR_CHECK(webserver::stop_webserver());
+  vTaskDelay(pdMS_TO_TICKS(100));
+  esp_wifi_stop();
+  vTaskDelay(pdMS_TO_TICKS(100));
+  esp_netif_destroy_default_wifi(wifi_esp_netif);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  wifi_init_sta();
   vTaskDelete(NULL);  // Delete the task when done
 }
 }  // namespace network
