@@ -1,39 +1,40 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <list>
 #include <string>
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
 
-namespace storage {
+namespace nm_storage {
 
 class storage {
  public:
   storage();
 
-  static void init_spiffs();
-  static size_t Remaing_space();
+  static esp_err_t init_spiffs();
 
-  static esp_err_t open_file_r();
-  static esp_err_t open_file_w();
+  static esp_err_t open_file(std::string file_name, const char* mode);
   static esp_err_t close_file();
 
   static esp_err_t read_line(char* buffer, size_t len);
   static esp_err_t write_file(const char* content);
 
-  static esp_vfs_spiffs_conf_t conf;
+  static std::list<std::string> list_files();
+  static esp_err_t create_file(std::string file_name);
+  static esp_err_t delete_file(std::string file_name);
+  static size_t Remaing_space();
+
   static size_t total;
   static size_t used;
 
-  static const char* path_file;
+  static std::list<std::string> files;
+  static int file_count;
+  static std::string file_name_op;
   static FILE* file;
 };
 
-// static const httpd_uri_t uri_get = {.uri = "/",
-//                                     .method = HTTP_GET,
-//                                     .handler = get_req_handler,
-//                                     .user_ctx = NULL};
-
-}  // namespace storage
+}  // namespace nm_storage

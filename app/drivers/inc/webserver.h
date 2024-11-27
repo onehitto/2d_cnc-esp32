@@ -27,7 +27,7 @@ class webserver {
   // wifi setup
   static void wifi_init_ap();
   static void wifi_init_sta();
-  static void restart_as_STA(void* parameter);
+  static void tsk_restart_as_STA(void* parameter);
 
   static void save_credentials();
   static void process_creadentials_msg(std::string& message_buffer);

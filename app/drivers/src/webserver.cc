@@ -284,7 +284,7 @@ esp_err_t webserver::handle_ws_setcreadentials(httpd_req_t* req) {
       free(ws_pkt.payload);
       if (credentials_valid) {
         save_credentials();
-        if (xTaskCreate(restart_as_STA, "restart_as_STA", 4096, NULL, 5,
+        if (xTaskCreate(tsk_restart_as_STA, "restart_as_STA", 4096, NULL, 5,
                         NULL) != pdPASS) {
           ESP_LOGE(TAG, "Failed to create server stop task.");
           return ESP_ERR_NO_MEM;
@@ -680,7 +680,7 @@ void webserver::save_credentials() {
   ESP_LOGI(TAG, "Saved Wi-Fi credentials: SSID=%s", ssid_buffer);
 }
 
-void webserver::restart_as_STA(void* parameter) {
+void webserver::tsk_restart_as_STA(void* parameter) {
   // Cast parameter if needed (e.g., pass the server handle or other context)
   ESP_LOGI(TAG, "Restarting as STA mode...");
 

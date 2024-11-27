@@ -1,0 +1,22 @@
+2D cnc machine
+cnc:
+  ✔ 1. G0/G1 parser @done(24-11-26 22:13)
+  ✔ 2. G2/G3 parser @done(24-11-26 22:13)
+  ☐ 3. Implement timer for stepper motor
+  ☐ 4. Implement GPIO to control stepper motor /  PWM server motor / sensor
+  ☐ 5. Implemtent event loop for cnc machine
+  webserver:
+    ✔ 1. Implement a webserver that can save the wifi credentials to nvs @done(24-11-26 21:58)
+    ☐ 2. Open a web socket that control/monitor the cnc machine
+    wifi:
+      ✔ 1. Read nvs for creadentials if unfound wifi setup as AP , and open webserver port 4397 , if creadentials are set/saved in nvs restart as STA @done(24-11-26 21:45)
+  storage:
+    ✔ 1. Inialize SPIFFS 8Mb : "/storage" @done(24-11-26 21:57)
+    ✔ 2. Open/Close file - Read/Write file - Reaming size @done(24-11-26 21:57)
+    ✔ 3. List files in SPIFFS @done(24-11-27 22:33)
+    ✔ 4. Delete file in SPIFFS @done(24-11-27 22:33)
+    ✔ 5. Create a file in SPIFFS @done(24-11-27 22:33)
+  freeRTOS:
+    ☐ 1. Implement task for cnc machine
+    ✔ 2. Implement task for restart wfi as sta @done(24-11-27 22:35)
+

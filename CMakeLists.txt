@@ -10,3 +10,5 @@ set(EXTRA_COMPONENT_DIRS core app)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 project(2d_cnc)
+
+# spiffs_create_partition_image(storage storage FLASH_IN_PROJECT)
