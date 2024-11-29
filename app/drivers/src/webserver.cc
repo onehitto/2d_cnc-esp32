@@ -39,36 +39,29 @@ httpd_ws_frame_t hello_frame = {.final = true,
                                 .len = 0};
 
 // websocket uri handlers
-static httpd_uri_t ws_setcreadentials = {
-    .uri = "/ws_setcreadentials",
-    .method = HTTP_GET,
-    .handler = webserver::handle_ws_setcreadentials,
+static httpd_uri_t https_set_creadentials = {
+    .uri = "/set-creadentials",
+    .method = HTTP_POST,
+    .handler = webserver::handle_https_set_credentials,
     .user_ctx = NULL,
-    .is_websocket = true,
-    .handle_ws_control_frames = true,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
     .supported_subprotocol = NULL};
 
-static httpd_uri_t ws_hello = {.uri = "/ws_hello",
-                               .method = HTTP_GET,
-                               .handler = webserver::handle_ws_hello,
-                               .user_ctx = NULL,
-                               .is_websocket = true,
-                               .handle_ws_control_frames = true,
-                               .supported_subprotocol = NULL};
-
-static httpd_uri_t ws_filesys = {.uri = "/ws_filesys",
-                                 .method = HTTP_GET,
-                                 .handler = webserver::handle_ws_filesys,
-                                 .user_ctx = NULL,
-                                 .is_websocket = true,
-                                 .handle_ws_control_frames = true,
-                                 .supported_subprotocol = NULL};
+static httpd_uri_t ws_cnc = {.uri = "/ws",
+                             .method = HTTP_GET,
+                             .handler = webserver::handle_ws_cnc,
+                             .user_ctx = NULL,
+                             .is_websocket = true,
+                             .handle_ws_control_frames = true,
+                             .supported_subprotocol = NULL};
 
 webserver::webserver() {}
 
 void webserver::webserver_init() {
   esp_netif_init();
   esp_event_loop_create_default();
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
   // 1- check if the NVS partition has been initialized
   esp_err_t ret = nvs_flash_init();
@@ -147,10 +140,10 @@ void webserver::wifi_init_ap() {
           sizeof(wifi_config.ap.ssid));
   wifi_config.ap.ssid_len = strlen("2d_cnc_esp32");
   wifi_config.ap.max_connection = 4;
-  wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+  wifi_config.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+  strncpy((char*)wifi_config.ap.password, "12345678",
+          sizeof(wifi_config.ap.password));
   wifi_config.ap.ssid_hidden = 0;
-  wifi_config.ap.beacon_interval = 100;
-  wifi_config.ap.channel = 1;
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
@@ -184,10 +177,9 @@ void webserver::start_webserver(wifi_mode_t mode) {
     /* Register URI handlers */
     ESP_LOGI(TAG, "Registering URI handlers");
     if (mode == WIFI_MODE_AP)
-      httpd_register_uri_handler(server, &ws_setcreadentials);
+      httpd_register_uri_handler(server, &https_set_creadentials);
     else {
-      httpd_register_uri_handler(server, &ws_hello);
-      httpd_register_uri_handler(server, &ws_filesys);
+      httpd_register_uri_handler(server, &ws_cnc);
     }
     return;
   }
@@ -212,250 +204,67 @@ esp_err_t webserver::stop_webserver() {
 
 std::string message_buffer;
 
-esp_err_t webserver::handle_ws_setcreadentials(httpd_req_t* req) {
-  if (req->method == HTTP_GET) {
-    ESP_LOGD(TAG, "Handshake done, the new connection was opened");
-    return ESP_OK;
+esp_err_t webserver::handle_https_set_credentials(httpd_req_t* req) {
+  if (req->method != HTTP_POST) {
+    ESP_LOGE(TAG, "Unsupported method. Only POST is allowed.");
+    httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED,
+                        "Method not allowed");
+    return ESP_ERR_INVALID_ARG;
   }
 
-  httpd_ws_frame_t ws_pkt;
-  memset(&ws_pkt, 0, sizeof(ws_pkt));
+  char buffer[150];                  // Buffer for receiving request data
+  int total_len = req->content_len;  // Length of the incoming data
+  int received = 0;
 
-  // Get metadata for the WebSocket frame
-  esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to get WebSocket frame size: %s",
-             esp_err_to_name(ret));
-    return ret;
+  if (total_len >= sizeof(buffer)) {
+    ESP_LOGE(TAG, "Payload too large.");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
+    return ESP_ERR_INVALID_SIZE;
   }
 
-  ESP_LOGD(TAG, "WebSocket frame type: %d, length: %d, final: %d", ws_pkt.type,
-           ws_pkt.len, ws_pkt.final);
-
-  // Allocate memory for the payload
-  if (ws_pkt.len > 0) {
-    ws_pkt.payload =
-        (uint8_t*)malloc(ws_pkt.len + 1);  // +1 for null termination
-    if (!ws_pkt.payload) {
-      ESP_LOGE(TAG, "Failed to allocate memory for WebSocket payload");
-      return ESP_ERR_NO_MEM;
-    }
-
-    // Receive the payload
-    int retries = 3;
-    while (retries-- > 0) {
-      ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
-      if (ret == ESP_OK)
-        break;  // Success
-      if (ret == ESP_ERR_INVALID_STATE || ret == ESP_ERR_NO_MEM) {
-        ESP_LOGE(TAG, "WebSocket recv error: %s", esp_err_to_name(ret));
-        free(ws_pkt.payload);
-        return ret;
+  // Receive the request body
+  while (received < total_len) {
+    int ret = httpd_req_recv(req, buffer + received, total_len - received);
+    if (ret <= 0) {
+      ESP_LOGE(TAG, "Error receiving request body: %d", ret);
+      if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+        httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT, "Request timeout");
+      } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Internal server error");
       }
-      ESP_LOGW(TAG, "Retrying WebSocket recv...");
-      vTaskDelay(pdMS_TO_TICKS(50));  // Wait 50ms before retrying
-    }
-    if (retries <= 0) {
-      ESP_LOGE(TAG, "Failed to receive WebSocket payload after retries");
-      free(ws_pkt.payload);
       return ESP_FAIL;
     }
-    ws_pkt.payload[ws_pkt.len] = '\0';  // Null-terminate for safety
+    received += ret;
+  }
+  buffer[received] = '\0';  // Null-terminate the received data
+
+  ESP_LOGD(TAG, "Received credentials payload: %s", buffer);
+
+  // Process the received credentials
+  if (!process_creadentials_msg(buffer)) {
+    ESP_LOGE(TAG, "Invalid credentials received.");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid credentials");
+    return ESP_ERR_INVALID_ARG;
   }
 
-  // Handle frame types
-  switch (ws_pkt.type) {
-    case HTTPD_WS_TYPE_CONTINUE:
-      ESP_LOGD(TAG, "Continuation WebSocket frame received");
-      message_buffer += (char*)ws_pkt.payload;  // Append to the buffer
-      break;
-    case HTTPD_WS_TYPE_TEXT:
-      ESP_LOGD(TAG, "Text WebSocket frame received");
-      message_buffer = (char*)ws_pkt.payload;  // Start a new message
-      break;
+  // If credentials are valid, save them
+  save_credentials();
 
-    case HTTPD_WS_TYPE_BINARY:
-      ESP_LOGD(TAG, "Binary WebSocket frame received");
-      ESP_LOG_BUFFER_HEX(TAG, ws_pkt.payload, ws_pkt.len);
-      break;
+  // Send a response to acknowledge the credentials
+  const char resp[] = "Credentials updated successfully";
+  httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
 
-    case HTTPD_WS_TYPE_CLOSE:
-      ESP_LOGD(TAG, "Close WebSocket frame received. Cleaning up.");
-      free(ws_pkt.payload);
-      if (credentials_valid) {
-        save_credentials();
-        if (xTaskCreate(tsk_restart_as_STA, "restart_as_STA", 4096, NULL, 5,
-                        NULL) != pdPASS) {
-          ESP_LOGE(TAG, "Failed to create server stop task.");
-          return ESP_ERR_NO_MEM;
-        }
-      }
-      if (httpd_ws_send_frame(req, &close_frame) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send WebSocket close frame: %s",
-                 esp_err_to_name(ret));
-      } else {
-        ESP_LOGI(TAG, "WebSocket close frame sent successfully.");
-      }
-      return ESP_OK;
-
-    case HTTPD_WS_TYPE_PING:
-      ESP_LOGD(TAG, "Ping WebSocket frame received");
-      pong_pkt.payload = ws_pkt.payload;
-      pong_pkt.len = ws_pkt.len;
-      httpd_ws_send_frame(req, &pong_pkt);
-      break;
-
-    case HTTPD_WS_TYPE_PONG:
-      ESP_LOGD(TAG, "Pong WebSocket frame received");
-      break;
-
-    default:
-      ESP_LOGW(TAG, "Unsupported WebSocket frame type: %d", ws_pkt.type);
-      free(ws_pkt.payload);
-      return ESP_ERR_INVALID_ARG;
-  }
-
-  // If this is the final frame, process the full message
-  if (ws_pkt.final) {
-    ESP_LOGD(TAG, "Full WebSocket message received: %s",
-             message_buffer.c_str());
-    // Process the message here
-    process_creadentials_msg(message_buffer);
-    message_buffer.clear();  // Clear buffer for the next message
-  }
-
-  // Free the payload memory
-  if (ws_pkt.payload) {
-    free(ws_pkt.payload);
+  if (xTaskCreate(tsk_restart_as_STA, "restart_as_STA", 4096, NULL, 5, NULL) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "Failed to create STA restart task.");
+    return ESP_ERR_NO_MEM;
   }
 
   return ESP_OK;
 }
 
-esp_err_t webserver::handle_ws_hello(httpd_req_t* req) {
-  if (req->method == HTTP_GET) {
-    ESP_LOGD(TAG, "Handshake done, the new connection was opened");
-    return ESP_OK;
-  }
-
-  httpd_ws_frame_t ws_pkt;
-  memset(&ws_pkt, 0, sizeof(ws_pkt));
-
-  // Get metadata for the WebSocket frame
-  esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to get WebSocket frame size: %s",
-             esp_err_to_name(ret));
-    return ret;
-  }
-
-  ESP_LOGD(TAG, "WebSocket frame type: %d, length: %d, final: %d", ws_pkt.type,
-           ws_pkt.len, ws_pkt.final);
-
-  // Allocate memory for the payload
-  if (ws_pkt.len > 0) {
-    ws_pkt.payload =
-        (uint8_t*)malloc(ws_pkt.len + 1);  // +1 for null termination
-    if (!ws_pkt.payload) {
-      ESP_LOGE(TAG, "Failed to allocate memory for WebSocket payload");
-      return ESP_ERR_NO_MEM;
-    }
-
-    // Receive the payload
-    int retries = 3;
-    while (retries-- > 0) {
-      ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
-      if (ret == ESP_OK)
-        break;  // Success
-      if (ret == ESP_ERR_INVALID_STATE || ret == ESP_ERR_NO_MEM) {
-        ESP_LOGE(TAG, "WebSocket recv error: %s", esp_err_to_name(ret));
-        free(ws_pkt.payload);
-        return ret;
-      }
-      ESP_LOGW(TAG, "Retrying WebSocket recv...");
-      vTaskDelay(pdMS_TO_TICKS(50));  // Wait 50ms before retrying
-    }
-    if (retries <= 0) {
-      ESP_LOGE(TAG, "Failed to receive WebSocket payload after retries");
-      free(ws_pkt.payload);
-      return ESP_FAIL;
-    }
-    ws_pkt.payload[ws_pkt.len] = '\0';  // Null-terminate for safety
-  }
-
-  // Handle frame types
-  switch (ws_pkt.type) {
-    case HTTPD_WS_TYPE_CONTINUE:
-      ESP_LOGD(TAG, "Continuation WebSocket frame received");
-      message_buffer += (char*)ws_pkt.payload;  // Append to the buffer
-      break;
-    case HTTPD_WS_TYPE_TEXT:
-      ESP_LOGD(TAG, "Text WebSocket frame received");
-      message_buffer = (char*)ws_pkt.payload;  // Start a new message
-      break;
-
-    case HTTPD_WS_TYPE_BINARY:
-      ESP_LOGD(TAG, "Binary WebSocket frame received");
-      ESP_LOG_BUFFER_HEX(TAG, ws_pkt.payload, ws_pkt.len);
-      break;
-
-    case HTTPD_WS_TYPE_CLOSE:
-      ESP_LOGD(TAG, "Close WebSocket frame received. Cleaning up.");
-      free(ws_pkt.payload);
-      if (httpd_ws_send_frame(req, &close_frame) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send WebSocket close frame: %s",
-                 esp_err_to_name(ret));
-      } else {
-        ESP_LOGI(TAG, "WebSocket close frame sent successfully.");
-      }
-      return ESP_OK;
-
-    case HTTPD_WS_TYPE_PING:
-      ESP_LOGD(TAG, "Ping WebSocket frame received");
-      pong_pkt.payload = ws_pkt.payload;
-      pong_pkt.len = ws_pkt.len;
-      httpd_ws_send_frame(req, &pong_pkt);
-      break;
-
-    case HTTPD_WS_TYPE_PONG:
-      ESP_LOGD(TAG, "Pong WebSocket frame received");
-      break;
-
-    default:
-      ESP_LOGW(TAG, "Unsupported WebSocket frame type: %d", ws_pkt.type);
-      free(ws_pkt.payload);
-      return ESP_ERR_INVALID_ARG;
-  }
-
-  // If this is the final frame, process the full message
-  if (ws_pkt.final) {
-    ESP_LOGD(TAG, "Full WebSocket message received: %s",
-             message_buffer.c_str());
-    // Process the message here
-    message_buffer.clear();  // Clear buffer for the next message
-  }
-
-  const char* response = "Hello world from ESP32 WebSocket server!";
-
-  hello_frame.payload = (uint8_t*)response;
-  hello_frame.len = strlen(response);
-
-  if (httpd_ws_send_frame(req, &hello_frame) != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to send WebSocket response: %s",
-             esp_err_to_name(ret));
-  } else {
-    ESP_LOGI(TAG, "Sent message: %s", response);
-  }
-
-  // Free the payload memory
-  if (ws_pkt.payload) {
-    free(ws_pkt.payload);
-  }
-
-  return ESP_OK;
-}
-
-esp_err_t webserver::handle_ws_filesys(httpd_req_t* req) {
+esp_err_t webserver::handle_ws_cnc(httpd_req_t* req) {
   if (req->method == HTTP_GET) {
     ESP_LOGD(TAG, "Handshake done, the new connection was opened");
     return ESP_OK;
@@ -578,10 +387,10 @@ esp_err_t webserver::handle_ws_filesys(httpd_req_t* req) {
   return ESP_OK;
 }
 
-void webserver::process_creadentials_msg(std::string& message_buffer) {
+bool webserver::process_creadentials_msg(const char* buffer) {
   bool ssid_received = false;
   bool password_received = false;
-  cJSON* root = cJSON_Parse(message_buffer.c_str());
+  cJSON* root = cJSON_Parse(buffer);
   if (root == nullptr) {
     ESP_LOGE(TAG, "Failed to parse JSON");
   } else {
@@ -616,6 +425,7 @@ void webserver::process_creadentials_msg(std::string& message_buffer) {
     // Free the JSON object
     cJSON_Delete(root);
   }
+  return credentials_valid;
 }
 
 void webserver::wifi_event_handler(void* arg,
@@ -641,21 +451,17 @@ void webserver::wifi_event_handler(void* arg,
         ESP_LOGE(
             TAG,
             "Failed to connect after 3 attempts. Falling back to AP mode.");
-        ESP_LOGI(TAG, "Stopping Wi-Fi...");
-        esp_wifi_stop();
-        ESP_LOGI(TAG, "Destroying default Wi-Fi interface...");
-        esp_netif_destroy_default_wifi(wifi_esp_netif);
-        ESP_ERROR_CHECK(esp_event_handler_instance_unregister(
-            WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id));
-        ESP_ERROR_CHECK(esp_event_handler_instance_unregister(
-            WIFI_EVENT, IP_EVENT_STA_GOT_IP, instance_got_ip));
-        ESP_LOGI(TAG, "Unregistered Wi-Fi event handlers.");
-        wifi_init_ap();  // Switch to AP mode
+        if (xTaskCreate(tsk_restart_as_AP, "tsk_restart_as_AP", 4096, NULL, 5,
+                        NULL) != pdPASS) {
+          ESP_LOGE(TAG, "Failed to create STA restart task.");
+        }
       }
     } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
       wifi_event_sta_connected_t* event =
           (wifi_event_sta_connected_t*)event_data;
       ESP_LOGI(TAG, "Connected to Wi-Fi. SSID: %s", event->ssid);
+    } else if (event_id == WIFI_EVENT_AP_STOP) {
+      ESP_LOGW(TAG, "AP has stopped unexpectedly!");
     } else {
       ESP_LOGI(TAG, "EVENT %ld ", event_id);
     }
@@ -698,4 +504,22 @@ void webserver::tsk_restart_as_STA(void* parameter) {
   wifi_init_sta();
   vTaskDelete(NULL);  // Delete the task when done
 }
+void webserver::tsk_restart_as_AP(void* parameter) {
+  ESP_ERROR_CHECK(webserver::stop_webserver());
+  ESP_LOGI(TAG, "Unregistered Wi-Fi event handlers.");
+  ESP_ERROR_CHECK(esp_event_handler_instance_unregister(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id));
+  ESP_ERROR_CHECK(esp_event_handler_instance_unregister(
+      WIFI_EVENT, IP_EVENT_STA_GOT_IP, instance_got_ip));
+
+  ESP_LOGI(TAG, "Stopping Wi-Fi...");
+  esp_wifi_stop();
+  ESP_LOGI(TAG, "Destroying default Wi-Fi interface...");
+  esp_netif_destroy_default_wifi(wifi_esp_netif);
+
+  wifi_init_ap();  // Switch to AP mode
+
+  vTaskDelete(NULL);
+}
+
 }  // namespace network

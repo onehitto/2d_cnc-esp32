@@ -1,7 +1,8 @@
 import websocket
 import json
+from time import sleep
 
-ws_url = "ws://192.168.1.2:4398/ws_hello"  # Replace with your server's URL
+ws_url = "ws://192.168.1.7:4398/ws"  # Replace with your server's URL
 #ws_url = "ws://192.168.4.1:4397/ws_setcreadentials"  # Replace with your server's URL
 data = {"ssid": "ssid", "password": "password"}
 
@@ -29,8 +30,10 @@ def on_open(ws):
 # Callback when a message is received
 def on_message(ws, message):
     print(f"Received message: {message}")
-    print("Closing connection...")
-    ws.close()
+    sleep(0.1)
+    ws.send("thx for pc: ")  # Send a reply
+    # print("Closing connection...")
+    # ws.close()
 
 # Callback when an error occurs
 def on_error(ws, error):

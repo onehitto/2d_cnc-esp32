@@ -4,12 +4,15 @@
 
 extern "C" void app_main(void) {
   // engine::cnc obj;
-  // network::webserver ws;
 
-  // ws.webserver_init();
+  network::webserver ws;
+
+  ws.webserver_init();
 
   while (1) {
     ESP_LOGI(TAG, "Hello cnc !!");
-    vTaskDelay(pdSECOND * 100);
+    ESP_LOGI("HEAP", "Free heap: %ld bytes", esp_get_free_heap_size());
+
+    vTaskDelay(pdSECOND * 5);
   }
 }
