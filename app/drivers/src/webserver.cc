@@ -3,6 +3,7 @@
 namespace network {
 
 #define TAG "WEB_SERVER"
+#define MAX_WS_PAYLOAD_LEN 1024  // Set a maximum length (1 KB in this example)
 
 // global variables
 wifi_config_t webserver::wifi_config = {};
@@ -18,6 +19,8 @@ char webserver::ssid_buffer[32] = {0};  // Initialize with null characters
 char webserver::password_buffer[64] = {0};
 bool webserver::credentials_valid = false;
 
+QueueHandle_t queue;
+
 // WebSocket frames
 httpd_ws_frame_t pong_pkt = {.final = true,
                              .fragmented = false,
@@ -25,18 +28,11 @@ httpd_ws_frame_t pong_pkt = {.final = true,
                              .payload = nullptr,
                              .len = 0};
 
-httpd_ws_frame_t close_frame = {
-    .final = true,
-    .fragmented = false,
-    .type = HTTPD_WS_TYPE_CLOSE,  // WebSocket close frame type
-    .payload = NULL,              // No payload for a simple close frame
-    .len = 0,                     // Length of the payload
-};
-httpd_ws_frame_t hello_frame = {.final = true,
-                                .fragmented = false,
-                                .type = HTTPD_WS_TYPE_TEXT,
-                                .payload = nullptr,
-                                .len = 0};
+httpd_ws_frame_t msg_frame = {.final = true,
+                              .fragmented = false,
+                              .type = HTTPD_WS_TYPE_TEXT,
+                              .payload = nullptr,
+                              .len = 0};
 
 // websocket uri handlers
 static httpd_uri_t https_set_creadentials = {
@@ -53,7 +49,7 @@ static httpd_uri_t ws_cnc = {.uri = "/ws",
                              .handler = webserver::handle_ws_cnc,
                              .user_ctx = NULL,
                              .is_websocket = true,
-                             .handle_ws_control_frames = true,
+                             .handle_ws_control_frames = false,
                              .supported_subprotocol = NULL};
 
 webserver::webserver() {}
@@ -202,8 +198,6 @@ esp_err_t webserver::stop_webserver() {
   return ret;
 }
 
-std::string message_buffer;
-
 esp_err_t webserver::handle_https_set_credentials(httpd_req_t* req) {
   if (req->method != HTTP_POST) {
     ESP_LOGE(TAG, "Unsupported method. Only POST is allowed.");
@@ -285,6 +279,19 @@ esp_err_t webserver::handle_ws_cnc(httpd_req_t* req) {
            ws_pkt.len, ws_pkt.final);
 
   // Allocate memory for the payload
+  if (ws_pkt.len > MAX_WS_PAYLOAD_LEN) {
+    ESP_LOGE(TAG, "WebSocket payload too large: %d bytes (max: %d)", ws_pkt.len,
+             MAX_WS_PAYLOAD_LEN);
+    const char* err_msg =
+        "{\"status\":\"error\",\"message\":\"Payload > 1kb\"}";
+    msg_frame.payload = (uint8_t*)err_msg;
+    msg_frame.len = strlen(err_msg),
+
+    httpd_ws_send_frame(req, &msg_frame);
+
+    return ESP_ERR_INVALID_SIZE;  // Return an error code
+  }
+
   if (ws_pkt.len > 0) {
     ws_pkt.payload =
         (uint8_t*)malloc(ws_pkt.len + 1);  // +1 for null termination
@@ -292,98 +299,62 @@ esp_err_t webserver::handle_ws_cnc(httpd_req_t* req) {
       ESP_LOGE(TAG, "Failed to allocate memory for WebSocket payload");
       return ESP_ERR_NO_MEM;
     }
-
-    // Receive the payload
-    int retries = 3;
-    while (retries-- > 0) {
-      ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
-      if (ret == ESP_OK)
-        break;  // Success
-      if (ret == ESP_ERR_INVALID_STATE || ret == ESP_ERR_NO_MEM) {
-        ESP_LOGE(TAG, "WebSocket recv error: %s", esp_err_to_name(ret));
-        free(ws_pkt.payload);
-        return ret;
-      }
-      ESP_LOGW(TAG, "Retrying WebSocket recv...");
-      vTaskDelay(pdMS_TO_TICKS(50));  // Wait 50ms before retrying
-    }
-    if (retries <= 0) {
-      ESP_LOGE(TAG, "Failed to receive WebSocket payload after retries");
-      free(ws_pkt.payload);
-      return ESP_FAIL;
-    }
-    ws_pkt.payload[ws_pkt.len] = '\0';  // Null-terminate for safety
   }
 
-  // Handle frame types
-  switch (ws_pkt.type) {
-    case HTTPD_WS_TYPE_CONTINUE:
-      ESP_LOGD(TAG, "Continuation WebSocket frame received");
-      message_buffer += (char*)ws_pkt.payload;  // Append to the buffer
-      break;
-    case HTTPD_WS_TYPE_TEXT:
-      ESP_LOGD(TAG, "Text WebSocket frame received");
-      message_buffer = (char*)ws_pkt.payload;  // Start a new message
-      break;
-
-    case HTTPD_WS_TYPE_BINARY:
-      ESP_LOGD(TAG, "Binary WebSocket frame received");
-      ESP_LOG_BUFFER_HEX(TAG, ws_pkt.payload, ws_pkt.len);
-      break;
-
-    case HTTPD_WS_TYPE_CLOSE:
-      ESP_LOGD(TAG, "Close WebSocket frame received. Cleaning up.");
-      free(ws_pkt.payload);
-      if (httpd_ws_send_frame(req, &close_frame) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send WebSocket close frame: %s",
-                 esp_err_to_name(ret));
-      } else {
-        ESP_LOGI(TAG, "WebSocket close frame sent successfully.");
-      }
-      return ESP_OK;
-
-    case HTTPD_WS_TYPE_PING:
-      ESP_LOGD(TAG, "Ping WebSocket frame received");
-      pong_pkt.payload = ws_pkt.payload;
-      pong_pkt.len = ws_pkt.len;
-      httpd_ws_send_frame(req, &pong_pkt);
-      break;
-
-    case HTTPD_WS_TYPE_PONG:
-      ESP_LOGD(TAG, "Pong WebSocket frame received");
-      break;
-
-    default:
-      ESP_LOGW(TAG, "Unsupported WebSocket frame type: %d", ws_pkt.type);
-      free(ws_pkt.payload);
-      return ESP_ERR_INVALID_ARG;
+  // Receive the payload
+  ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "httpd_ws_recv_frame failed: %d", ret);
+    free(ws_pkt.payload);
+    return ret;
   }
+  ws_pkt.payload[ws_pkt.len] = '\0';  // Null-terminate for safety
 
-  // If this is the final frame, process the full message
-  if (ws_pkt.final) {
-    ESP_LOGI(TAG, "Full WebSocket message received: %s",
-             message_buffer.c_str());
-    // Process the message here
-    message_buffer.clear();  // Clear buffer for the next message
-  }
-
-  const char* response = "Hello world from ESP32 WebSocket server!";
-
-  hello_frame.payload = (uint8_t*)response;
-  hello_frame.len = strlen(response);
-
-  if (httpd_ws_send_frame(req, &hello_frame) != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to send WebSocket response: %s",
-             esp_err_to_name(ret));
-  } else {
-    ESP_LOGI(TAG, "Sent message: %s", response);
-  }
-
+  // Process the WebSocket message
+  process_ws_message(req, (const char*)ws_pkt.payload);
   // Free the payload memory
   if (ws_pkt.payload) {
     free(ws_pkt.payload);
   }
 
+  return ESP_OK;
+}
+
+esp_err_t webserver::process_ws_message(httpd_req_t* req, const char* message) {
+  cJSON* json = cJSON_Parse(message);
+  if (!json) {
+    ESP_LOGE(TAG, "Failed to parse JSON");
+    return ESP_FAIL;
+  }
+
+  const char* type = cJSON_GetObjectItem(json, "type")->valuestring;
+
+  if (strcmp(type, "file_upload") == 0) {
+    const char* filename = cJSON_GetObjectItem(json, "filename")->valuestring;
+    int chunk_number = cJSON_GetObjectItem(json, "chunk_number")->valueint;
+    int total_chunks = cJSON_GetObjectItem(json, "total_chunks")->valueint;
+    const char* data = cJSON_GetObjectItem(json, "data")->valuestring;
+    ESP_LOGI(TAG, "Received file upload request: %s", filename);
+    // Handle file upload...
+  } else if (strcmp(type, "file_download") == 0) {
+    const char* filename = cJSON_GetObjectItem(json, "filename")->valuestring;
+    ESP_LOGI(TAG, "Received file download request: %s", filename);
+    // Handle file download...
+  } else if (strcmp(type, "cnc_status") == 0) {
+    ESP_LOGI(TAG, "Received CNC status request");
+    // Send CNC status...
+  } else if (strcmp(type, "execute_gcode") == 0) {
+    const char* command = cJSON_GetObjectItem(json, "command")->valuestring;
+    ESP_LOGI(TAG, "Received G-code command: %s", command);
+    // Execute G-code command...
+  } else if (strcmp(type, "execute_file") == 0) {
+    const char* filename = cJSON_GetObjectItem(json, "filename")->valuestring;
+    ESP_LOGI(TAG, "Received file execution request: %s", filename);
+    // Execute file...
+  } else {
+    ESP_LOGW(TAG, "Unknown message type: %s", type);
+  }
+  cJSON_Delete(json);
   return ESP_OK;
 }
 
@@ -504,6 +475,7 @@ void webserver::tsk_restart_as_STA(void* parameter) {
   wifi_init_sta();
   vTaskDelete(NULL);  // Delete the task when done
 }
+
 void webserver::tsk_restart_as_AP(void* parameter) {
   ESP_ERROR_CHECK(webserver::stop_webserver());
   ESP_LOGI(TAG, "Unregistered Wi-Fi event handlers.");
@@ -522,4 +494,15 @@ void webserver::tsk_restart_as_AP(void* parameter) {
   vTaskDelete(NULL);
 }
 
+esp_err_t webserver::ws_send(httpd_handle_t hd,
+                             int fd,
+                             const char* data,
+                             size_t len) {
+  httpd_ws_frame_t ws_pkt;
+  memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+  ws_pkt.payload = (uint8_t*)data;
+  ws_pkt.len = len;
+  ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+  return httpd_ws_send_frame_async(hd, fd, &ws_pkt);
+}
 }  // namespace network

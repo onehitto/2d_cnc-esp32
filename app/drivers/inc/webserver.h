@@ -23,7 +23,7 @@ class webserver {
   webserver();
 
   // init webserver (wifi nvs webserver)
-  void webserver_init();
+  static void webserver_init();
 
   // wifi setup
   static void wifi_init_ap();
@@ -33,6 +33,7 @@ class webserver {
 
   static void save_credentials();
   static bool process_creadentials_msg(const char* message_buffer);
+  static esp_err_t process_ws_message(httpd_req_t* req, const char* message);
 
   // wifi handler
   static void wifi_event_handler(void* arg,
@@ -48,6 +49,12 @@ class webserver {
   // webserver socket handlers
   static esp_err_t handle_ws_cnc(httpd_req_t* req);
 
+  static esp_err_t ws_send(httpd_handle_t hd,
+                           int fd,
+                           const char* data,
+                           size_t len);
+
+  static QueueHandle_t queue;
   //  private:
   static char ssid_buffer[32];
   static char password_buffer[64];

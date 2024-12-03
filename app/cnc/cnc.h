@@ -6,6 +6,7 @@
 #include <iostream>
 #include <ostream>
 #include <sstream>
+#include "webserver.h"
 
 namespace engine {
 
@@ -55,6 +56,10 @@ class cnc {
   int cnc_config_cmd(char conf_n, std::string& line, int start);
   void cnc_exe_handler();
 
+  QueueHandle_t cnc_command_queue;
+
+  void cnc_task(void* arg);
+
   block_t block_to_exe;
   block_t next_block;
 
@@ -71,5 +76,8 @@ class cnc {
   } status;
 
   std::ostringstream log;
+
+  static network::webserver ws;
+  static nm_storage::storage storage;
 };
 }  // namespace engine

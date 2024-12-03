@@ -1,6 +1,14 @@
 #include "cnc.h"
 
 using namespace engine;
+using namespace network;
+using namespace nm_storage;
+
+webserver ws;
+storage storage;
+
+#define MAX_COMMAND_LENGTH 100
+#define TAG "CNC"
 
 cnc::cnc() {
   memset(&block_to_exe, 0, sizeof(block_t));
@@ -24,7 +32,13 @@ cnc::cnc() {
 
 cnc::~cnc() {}
 
-void cnc::cnc_init() {}
+void cnc::cnc_init() {
+  // init webserver (wifi nvs webserver)
+  cnc_command_queue = xQueueCreate(10, MAX_COMMAND_LENGTH);
+  webserver::queue = cnc_command_queue;
+  webserver::webserver_init();
+  ESP_ERROR_CHECK(storage::init_spiffs());
+}
 
 int cnc::cnc_config_cmd(char conf_n, std::string& line, int start) {
   // parse the configuration command
@@ -396,6 +410,39 @@ void cnc::cnc_exe_handler() {
         status.sys_coord.x += xForward * config.mm_per_step_diag;
         status.sys_coord.y += yForward * config.mm_per_step_diag;
       }
+    }
+  }
+}
+
+void cnc::cnc_task(void* arg) {
+  char command[MAX_COMMAND_LENGTH];
+
+  while (true) {
+    // Wait indefinitely for a command
+    if (xQueueReceive(cnc_command_queue, command, portMAX_DELAY)) {
+      ESP_LOGI(TAG, "CNC Task received command: %s", command);
+
+      // Process the command
+      if (strcmp(command, "get_status") == 0) {
+        // Handle get_status
+        // For demonstration, we'll just log the status
+        ESP_LOGI(TAG, "CNC Status: Idle");
+
+      } else if (strncmp(command, "run_file ", 9) == 0) {
+        const char* filename = command + 9;
+        // TODO: Implement run_file logic
+        ESP_LOGI(TAG, "Running file: %s", filename);
+
+      } else if (strncmp(command, "delete_file ", 12) == 0) {
+        const char* filename = command + 12;
+        // TODO: Implement delete_file logic
+        ESP_LOGI(TAG, "Deleting file: %s", filename);
+
+      } else if (strcmp(command, "list_file") == 0) {
+        // TODO: Implement list_file logic
+        ESP_LOGI(TAG, "Listing files");
+      }
+      // Add additional command handling as needed
     }
   }
 }

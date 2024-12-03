@@ -6,4 +6,4 @@ set(SOURCES
 )
 
 idf_component_register(SRCS ${SOURCES}
-    INCLUDE_DIRS ${INCLUDE_DIR} REQUIRES freertos esp_common cnc drivers)
+    INCLUDE_DIRS ${INCLUDE_DIR} REQUIRES freertos esp_common cnc)
