@@ -4,10 +4,12 @@ cnc:
   ✔ 2. G2/G3 parser @done(24-11-26 22:13)
   ☐ 3. Implement timer for stepper motor
   ☐ 4. Implement GPIO to control stepper motor /  PWM server motor / sensor
-  ☐ 5. Implemtent event loop for cnc machine
+  ☐ 5. Implemtent event loop for cnc machine @started(24-12-04 22:45)
+  ☐ 6. Implement homing
   webserver:
     ✔ 1. Implement a webserver that can save the wifi credentials to nvs @done(24-11-26 21:58)
-    ☐ 2. Open a web socket that control/monitor the cnc machine
+    ☐ 2. Open a web socket that control/monitor the cnc machine @started(24-12-04 22:45)
+    ☐ 3. Implement a webserver that can list files in storage / upload file to storage / delete file from storage / download file from storage
     wifi:
       ✔ 1. Read nvs for creadentials if unfound wifi setup as AP , and open webserver port 4397 , if creadentials are set/saved in nvs restart as STA @done(24-11-26 21:45)
   storage:
@@ -17,6 +19,45 @@ cnc:
     ✔ 4. Delete file in SPIFFS @done(24-11-27 22:33)
     ✔ 5. Create a file in SPIFFS @done(24-11-27 22:33)
   freeRTOS:
-    ☐ 1. Implement task for cnc machine
+    ☐ 1. Implement task for cnc machine @started(24-12-04 22:45)
     ✔ 2. Implement task for restart wfi as sta @done(24-11-27 22:35)
+  Log:
+    ☐ 1. Implement log system for cnc machine print to websocket
+    ☐ 2. Redirect ESP_LOG to websocket
 
+
+cnc scenario
+  1. init cnc_storage
+  2. nvs read ssid / password 
+    if ssid / password is not found
+      wifi mode is AP
+      webserver ws_setcreadentials
+      restart as sta
+    else
+      init cnc_wif_AP
+  //cnc will be connect to wifi 100%
+
+  3. webserver / ws_hello + ws_sysfile
+    // open a socket to computer
+    // send the list of files in the storage
+    // send status ( storage size / cnc status(idle/rdy) )
+    // 
+
+    some ws url
+    send status ( storage size / cnc status(idle/rdy) line_number file_seleted )
+    upload file to storage // download file from storage
+    delete file from storage.
+    run file from storage (task)
+    execute G command 
+
+
+  4.run file from storage (task)
+    init timer and gpios
+    performe homing 
+    open file
+    parser ( read line by line ) wait for cnc_timer to finich for each line
+      cal_block
+      launch timer (timer will be in the cnc_timer handler)
+    close file
+    dinit timer and gpios
+    delete task

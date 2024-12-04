@@ -58,7 +58,9 @@ class cnc {
 
   QueueHandle_t cnc_command_queue;
 
-  void cnc_task(void* arg);
+  void cnc_task();
+
+  static void cnc_task_entry(void* arg);
 
   block_t block_to_exe;
   block_t next_block;

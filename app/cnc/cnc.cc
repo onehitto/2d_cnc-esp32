@@ -7,8 +7,13 @@ using namespace nm_storage;
 webserver ws;
 storage storage;
 
-#define MAX_COMMAND_LENGTH 100
 #define TAG "CNC"
+#define MAX_COMMAND_LENGTH 100
+
+struct cnc_command_t {
+  char command[MAX_COMMAND_LENGTH];
+  int sock_fd;
+};
 
 cnc::cnc() {
   memset(&block_to_exe, 0, sizeof(block_t));
@@ -34,7 +39,7 @@ cnc::~cnc() {}
 
 void cnc::cnc_init() {
   // init webserver (wifi nvs webserver)
-  cnc_command_queue = xQueueCreate(10, MAX_COMMAND_LENGTH);
+  cnc_command_queue = xQueueCreate(10, sizeof(cnc_command_t));
   webserver::queue = cnc_command_queue;
   webserver::webserver_init();
   ESP_ERROR_CHECK(storage::init_spiffs());
@@ -414,33 +419,75 @@ void cnc::cnc_exe_handler() {
   }
 }
 
-void cnc::cnc_task(void* arg) {
-  char command[MAX_COMMAND_LENGTH];
+void cnc::cnc_task_entry(void* arg) {
+  cnc* self = static_cast<cnc*>(arg);  // Cast the void* to cnc*
+  if (self != nullptr) {
+    self->cnc_task();  // Call the non-static member function
+  }
+}
+
+void cnc::cnc_task() {
+  cnc_command_t cmd;
+  char response[256];
+  ESP_LOGI(TAG, "CNC Task started");
 
   while (true) {
     // Wait indefinitely for a command
-    if (xQueueReceive(cnc_command_queue, command, portMAX_DELAY)) {
-      ESP_LOGI(TAG, "CNC Task received command: %s", command);
+    if (xQueueReceive(cnc_command_queue, &cmd, portMAX_DELAY)) {
+      ESP_LOGI(TAG, "CNC Task received command: %s", cmd.command);
+      memset(response, 0, sizeof(response));
 
       // Process the command
-      if (strcmp(command, "get_status") == 0) {
-        // Handle get_status
-        // For demonstration, we'll just log the status
-        ESP_LOGI(TAG, "CNC Status: Idle");
+      if (strcmp(cmd.command, "get_status") == 0) {
+        snprintf(response, 128,
+                 "{\"sys_status\":\"%s\",\"sys_error\":\"%s\",\"x\":\"%.2f\","
+                 "\"y\":\"%.2f\",\"mm_per_step_xy\":\"%.2f\",\"mm_per_step_"
+                 "diag\":\"%.2f\"}",
+                 status.sys_status == IDLE ? "Idle" : "Busy",
+                 status.sys_error == NO_ERROR ? "No Error" : "INVALID_COMMAND",
+                 status.sys_coord.x, status.sys_coord.y, config.mm_per_step_xy,
+                 config.mm_per_step_diag);
+        // Send the CNC status
+        ESP_LOGI(TAG, "CNC Status !!");
 
-      } else if (strncmp(command, "run_file ", 9) == 0) {
-        const char* filename = command + 9;
-        // TODO: Implement run_file logic
-        ESP_LOGI(TAG, "Running file: %s", filename);
-
-      } else if (strncmp(command, "delete_file ", 12) == 0) {
-        const char* filename = command + 12;
-        // TODO: Implement delete_file logic
-        ESP_LOGI(TAG, "Deleting file: %s", filename);
-
-      } else if (strcmp(command, "list_file") == 0) {
-        // TODO: Implement list_file logic
-        ESP_LOGI(TAG, "Listing files");
+      } else if (strcmp(cmd.command, "get_list_file") == 0) {
+        std::string file_list = "[";
+        for (const auto& file : storage::list_files()) {
+          file_list += "\"" + file + "\",";
+        }
+        if (!file_list.empty() && file_list.back() == ',') {
+          file_list.pop_back();  // Remove the trailing comma
+        }
+        file_list += "]";
+        snprintf(response, 128, "{\"files\":%s}", file_list.c_str());
+        // Send the CNC status
+      } else if (strncmp(cmd.command, "execute_gcode", 13) == 0) {
+        std::string gcode_command = cmd.command + 14;
+        int ret = snprintf(response, 128,
+                           "{\"type\":\"execute_gcode\",\"file\":\"%s\"}",
+                           gcode_command.c_str());
+        if (ret < 0) {
+          ESP_LOGE(TAG, "Failed to execute G-code command");
+        }
+      } else if (strncmp(cmd.command, "execute_file", 12) == 0) {
+        std::string filename = cmd.command + 13;
+        int ret = snprintf(response, 128,
+                           "{\"type\":\"execute_file\",\"file\":\"%s\"}",
+                           filename.c_str());
+        if (ret < 0) {
+          ESP_LOGE(TAG, "Failed to execute file: %s", filename.c_str());
+        }
+      } else {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"error\",\"message\":\"Unknown command\"}");
+      }
+      if (strlen(response) > 0) {
+        esp_err_t ret = webserver::ws_send(webserver::server, cmd.sock_fd,
+                                           response, strlen(response));
+        if (ret != ESP_OK) {
+          ESP_LOGE(TAG, "Failed to send WebSocket message: %s",
+                   esp_err_to_name(ret));
+        }
       }
       // Add additional command handling as needed
     }
