@@ -16,7 +16,21 @@
 
 #include "cJSON.h"
 
+#define RUN_FILE 1
+#define EXECUTE_GCODE 2
+#define PAUSE 3
+#define RESUME 4
+#define STOP 5
+
+#define GET_STATUS 6
+#define CONFIG 7
+
 namespace network {
+
+struct file_upload_state_t {
+  int current_chunk;
+  int total_chunks;
+};
 
 class webserver {
  public:
@@ -53,6 +67,10 @@ class webserver {
                            int fd,
                            const char* data,
                            size_t len);
+  static void resp_msg(char* buffer,
+                       const char* response,
+                       const char* err_msg,
+                       const char* content);
 
   static QueueHandle_t queue;
   //  private:
@@ -64,10 +82,5 @@ class webserver {
   static esp_netif_t* wifi_esp_netif;
   static int count_try;
 };
-
-// static const httpd_uri_t uri_get = {.uri = "/",
-//                                     .method = HTTP_GET,
-//                                     .handler = get_req_handler,
-//                                     .user_ctx = NULL};
 
 }  // namespace network

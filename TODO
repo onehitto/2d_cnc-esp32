@@ -9,17 +9,18 @@ cnc:
   webserver:
     ✔ 1. Implement a webserver that can save the wifi credentials to nvs @done(24-11-26 21:58)
     ☐ 2. Open a web socket that control/monitor the cnc machine @started(24-12-04 22:45)
-    ☐ 3. Implement a webserver that can list files in storage / upload file to storage / delete file from storage / download file from storage
+    ☐ 3. Implement a webserver that can list files in storage / upload file to storage / download log file from storage
     wifi:
       ✔ 1. Read nvs for creadentials if unfound wifi setup as AP , and open webserver port 4397 , if creadentials are set/saved in nvs restart as STA @done(24-11-26 21:45)
-  storage:
+  storage: 
+    The storage will support only 2 files at a time, 1 for gcode , 2 for log
     ✔ 1. Inialize SPIFFS 8Mb : "/storage" @done(24-11-26 21:57)
     ✔ 2. Open/Close file - Read/Write file - Reaming size @done(24-11-26 21:57)
     ✔ 3. List files in SPIFFS @done(24-11-27 22:33)
     ✔ 4. Delete file in SPIFFS @done(24-11-27 22:33)
     ✔ 5. Create a file in SPIFFS @done(24-11-27 22:33)
   freeRTOS:
-    ☐ 1. Implement task for cnc machine @started(24-12-04 22:45)
+    ✔ 1. Implement task for cnc machine @started(24-12-04 22:45) @done(24-12-06 00:07) @lasted(1d1h22m31s)
     ✔ 2. Implement task for restart wfi as sta @done(24-11-27 22:35)
   Log:
     ☐ 1. Implement log system for cnc machine print to websocket
@@ -45,8 +46,7 @@ cnc scenario
 
     some ws url
     send status ( storage size / cnc status(idle/rdy) line_number file_seleted )
-    upload file to storage // download file from storage
-    delete file from storage.
+    upload file to storage // download log from storage
     run file from storage (task)
     execute G command 
 
@@ -61,3 +61,21 @@ cnc scenario
     close file
     dinit timer and gpios
     delete task
+
+
+/set_creadentials
+    {"ssid":"ssid","password":"password"}
+/ws
+    {"type":"upload_file","data":"data","chunk":number,"total":number}->{"response":"ok/fail/error",
+      "err_msg":""}
+    {"type":"run_file"} -> {"response":"ok/fail/error","err_msg":""}
+    {"type":"pause"} -> {"response":"ok/fail/error","err_msg":""}
+    {"type":"resume"} -> {"response":"ok/fail/error","err_msg":""}
+    {"type":"stop"} -> {"response":"ok/fail/error","err_msg":""}
+    {"type":"get_status"} -> {"response":"ok","err_msg":"","content":{"sys_state":"idle/rdy","line_number":number,
+        ,"x":number,"y":number,"resolution":number,"speed":number}}
+    {"type":"exe_gcode","data":"gcode"} -> {"response":"ok/fail/error","err_msg":""}
+    {"type":"config","data":"data"} -> {"response":"ok/fail/error","err_msg":""}
+
+    to discuss {"type":"get_log"} -> {"response":"ok","err_msg":"","content":"log"}
+

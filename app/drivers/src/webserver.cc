@@ -1,13 +1,20 @@
 #include "webserver.h"
 
 namespace network {
-
+using namespace nm_storage;
 #define TAG "WEB_SERVER"
-#define MAX_WS_PAYLOAD_LEN 1024  // Set a maximum length (1 KB in this example)
-#define MAX_COMMAND_LENGTH 100
+// TODO: should studythe max payload length with speed
+#define MAX_WS_PAYLOAD_LEN 2500  // Set a maximum length (1 KB in this example)
+#define MAX_CONTENT_LENGTH 100
+
+#define RESP_MSG(buffer, buffer_size, resp, err, c)                       \
+  snprintf(buffer, buffer_size,                                           \
+           "{\"response\":\"%s\",\"err_msg\":\"%s\",\"content\":\"%s\"}", \
+           resp, err, c)
 
 struct cnc_command_t {
-  char command[MAX_COMMAND_LENGTH];
+  uint8_t command;
+  char content[MAX_CONTENT_LENGTH];
   int sock_fd;
 };
 
@@ -18,6 +25,7 @@ esp_netif_t* webserver::wifi_esp_netif = NULL;
 
 static esp_event_handler_instance_t instance_any_id;
 static esp_event_handler_instance_t instance_got_ip;
+static file_upload_state_t file_upload_state;
 
 int webserver::count_try = 0;
 
@@ -28,12 +36,6 @@ bool webserver::credentials_valid = false;
 QueueHandle_t webserver::queue;
 
 // WebSocket frames
-httpd_ws_frame_t pong_pkt = {.final = true,
-                             .fragmented = false,
-                             .type = HTTPD_WS_TYPE_PONG,
-                             .payload = nullptr,
-                             .len = 0};
-
 httpd_ws_frame_t msg_frame = {.final = true,
                               .fragmented = false,
                               .type = HTTPD_WS_TYPE_TEXT,
@@ -138,13 +140,11 @@ void webserver::wifi_init_ap() {
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
   wifi_config = {};
-  strncpy((char*)wifi_config.ap.ssid, "2d_cnc_esp32",
-          sizeof(wifi_config.ap.ssid));
+  strncpy((char*)wifi_config.ap.ssid, "2d_cnc_esp32", 12);
   wifi_config.ap.ssid_len = strlen("2d_cnc_esp32");
   wifi_config.ap.max_connection = 4;
   wifi_config.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-  strncpy((char*)wifi_config.ap.password, "12345678",
-          sizeof(wifi_config.ap.password));
+  strncpy((char*)wifi_config.ap.password, "12345678", 8);
   wifi_config.ap.ssid_hidden = 0;
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -289,7 +289,7 @@ esp_err_t webserver::handle_ws_cnc(httpd_req_t* req) {
     ESP_LOGE(TAG, "WebSocket payload too large: %d bytes (max: %d)", ws_pkt.len,
              MAX_WS_PAYLOAD_LEN);
     const char* err_msg =
-        "{\"status\":\"error\",\"message\":\"Payload > 1kb\"}";
+        "{\"response\":\"error\",\"error\":\"Payload > 1kb\",\"content\":\"\"}";
     msg_frame.payload = (uint8_t*)err_msg;
     msg_frame.len = strlen(err_msg),
 
@@ -332,60 +332,92 @@ esp_err_t webserver::process_ws_message(httpd_req_t* req, const char* message) {
     ESP_LOGE(TAG, "Failed to parse JSON");
     return ESP_FAIL;
   }
+  char msg[256];
 
   cnc_command_t cmd;
   memset(&cmd, 0, sizeof(cnc_command_t));  // Initialize the command struct
   cmd.sock_fd = httpd_req_to_sockfd(req);  // Get the socket file descriptor
 
   const char* type = cJSON_GetObjectItem(json, "type")->valuestring;
-  /*
-    if (strcmp(type, "file_upload") == 0) {
-      const char* filename = cJSON_GetObjectItem(json, "filename")->valuestring;
-      int chunk_number = cJSON_GetObjectItem(json, "chunk_number")->valueint;
-      int total_chunks = cJSON_GetObjectItem(json, "total_chunks")->valueint;
-      const char* data = cJSON_GetObjectItem(json, "data")->valuestring;
-      ESP_LOGI(TAG, "Received file upload request: %s", filename);
-
-      // Prepare the command to send to the CNC task
-      snprintf(cmd.command, MAX_COMMAND_LENGTH, "file_upload %s %d %d",
-    filename, chunk_number, total_chunks);
-      // You may need to handle 'data' separately if it's large
-
-    } else if (strcmp(type, "file_download") == 0) {
-      const char* filename = cJSON_GetObjectItem(json, "filename")->valuestring;
-      ESP_LOGI(TAG, "Received file download request: %s", filename);
-
-      // Prepare the command
-      snprintf(cmd.command, MAX_COMMAND_LENGTH, "file_download %s", filename);
-
-    } else if (strcmp(type, "delete_file") == 0) {
-    const char* filename = cJSON_GetObjectItem(json, "filename")->valuestring;
-    ESP_LOGI(TAG, "Received file delete request: %s", filename);
-
-    // Prepare the command
-    snprintf(cmd.command, MAX_COMMAND_LENGTH, "delete_file %s", filename);
-
-  }  */
   ESP_LOGI(TAG, "------>Received message type: %s", type);
 
   if (strcmp(type, "get_status") == 0) {
-    strncpy(cmd.command, "get_status", MAX_COMMAND_LENGTH);
+    cmd.command = GET_STATUS;
+  } else if (strcmp(type, "exe_gcode") == 0) {
+    cmd.command = EXECUTE_GCODE;
+    const char* content = cJSON_GetObjectItem(json, "data")->valuestring;
+    strncpy(cmd.content, content, MAX_CONTENT_LENGTH - 1);
+    cmd.content[MAX_CONTENT_LENGTH - 1] = '\0';  // Ensure null-termination
+  } else if (strcmp(type, "config") == 0) {
+    cmd.command = CONFIG;
+    const char* content = cJSON_GetObjectItem(json, "data")->valuestring;
+    strncpy(cmd.content, content, MAX_CONTENT_LENGTH - 1);
+    cmd.content[MAX_CONTENT_LENGTH - 1] = '\0';  // Ensure null-termination
+  } else if (strcmp(type, "run_file") == 0) {
+    cmd.command = RUN_FILE;
+  } else if (strcmp(type, "pause") == 0) {
+    cmd.command = PAUSE;
+  } else if (strcmp(type, "resume") == 0) {
+    cmd.command = RESUME;
+  } else if (strcmp(type, "stop") == 0) {
+    cmd.command = STOP;
+  } else if (strcmp(type, "upload_file") == 0) {
+    int chunk = (int)cJSON_GetObjectItem(json, "chunk_number")->valuedouble;
+    int total_chunks =
+        (int)cJSON_GetObjectItem(json, "total_chunks")->valuedouble;
+    const char* data = cJSON_GetObjectItem(json, "data")->valuestring;
 
-  } else if (strcmp(type, "get_list_file") == 0) {
-    strncpy(cmd.command, "get_list_file", MAX_COMMAND_LENGTH);
+    ESP_LOGI(TAG, "Received upload_file chunk %d of %d", chunk, total_chunks);
 
-  } else if (strcmp(type, "execute_gcode") == 0) {
-    const char* gcode_command =
-        cJSON_GetObjectItem(json, "command")->valuestring;
-
-    snprintf(cmd.command, MAX_COMMAND_LENGTH, "execute_gcode %s",
-             gcode_command);
-
-  } else if (strcmp(type, "execute_file") == 0) {
-    const char* filename = cJSON_GetObjectItem(json, "filename")->valuestring;
-    // Prepare the command
-    snprintf(cmd.command, MAX_COMMAND_LENGTH, "execute_file %s", filename);
-
+    if (chunk == 1) {
+      if (ESP_OK != storage::open_file("exe_g.txt", "w")) {
+        RESP_MSG(msg, sizeof(msg), "error", "open file exe_g failed",
+                 "Failed to open file for writing");
+        ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
+        cJSON_Delete(json);
+        return ESP_FAIL;
+      }
+      if (ESP_OK != storage::write_file(data)) {
+        RESP_MSG(msg, sizeof(msg), "error", "write file exe_g failed",
+                 "Failed to write to file");
+        ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
+        cJSON_Delete(json);
+        return ESP_FAIL;
+      }
+      file_upload_state.current_chunk = chunk;
+      file_upload_state.total_chunks = total_chunks;
+      RESP_MSG(msg, sizeof(msg), "success", "", "Chunk received");
+      ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
+    } else {
+      if (chunk != file_upload_state.current_chunk + 1) {
+        ESP_LOGE(TAG, "Received out-of-order chunk %d (expected %d)", chunk,
+                 file_upload_state.current_chunk + 1);
+        RESP_MSG(msg, sizeof(msg), "error", "Out-of-order chunk",
+                 "Received out-of-order chunk");
+        ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
+        cJSON_Delete(json);
+        return ESP_FAIL;
+      }
+      if (ESP_OK != storage::write_file(data)) {
+        RESP_MSG(msg, sizeof(msg), "error", "write file exe_g failed",
+                 "Failed to write to file");
+        ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
+        cJSON_Delete(json);
+        return ESP_FAIL;
+      }
+      file_upload_state.current_chunk++;
+      if (file_upload_state.current_chunk == total_chunks) {
+        storage::close_file();
+        ESP_LOGI(TAG, "File upload complete");
+        RESP_MSG(msg, sizeof(msg), "success", "File upload complete", "");
+        ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
+      } else {
+        RESP_MSG(msg, sizeof(msg), "success", "", "Chunk received");
+        ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
+      }
+    }
+    cJSON_Delete(json);
+    return ESP_OK;
   } else {
     ESP_LOGW(TAG, "Unknown message type: %s", type);
     cJSON_Delete(json);
@@ -394,10 +426,10 @@ esp_err_t webserver::process_ws_message(httpd_req_t* req, const char* message) {
 
   // Send the command to the CNC task via the queue
   if (xQueueSend(queue, &cmd, 0) != pdPASS) {
-    ESP_LOGE(TAG, "Queue full, WebSocket message dropped");
-    const char* error_msg = "Error: CNC task busy";
-    ws_send(req->handle, httpd_req_to_sockfd(req), error_msg,
-            strlen(error_msg));
+    char msg[256];
+    RESP_MSG(msg, sizeof(msg), "error", "Send Queue failed",
+             "Failed to send command to CNC task");
+    ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
   }
 
   cJSON_Delete(json);
@@ -553,4 +585,5 @@ esp_err_t webserver::ws_send(httpd_handle_t hd,
   ws_pkt.fragmented = false;
   return httpd_ws_send_frame_async(hd, fd, &ws_pkt);
 }
+
 }  // namespace network

@@ -12,7 +12,6 @@ extern "C" void app_main(void) {
   while (1) {
     ESP_LOGI(TAG, "Hello cnc !!");
     ESP_LOGI("HEAP", "Free heap: %ld bytes", esp_get_free_heap_size());
-
-    vTaskDelay(pdSECOND * 105);
+    vTaskDelay(pdSECOND * 100);
   }
 }

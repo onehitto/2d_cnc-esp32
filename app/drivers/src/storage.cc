@@ -12,6 +12,8 @@ size_t storage::total = 0, storage::used = 0;
 
 std::list<std::string> storage::files = {};
 int storage::file_count = 0;
+int storage::line_number = 0;
+int storage::total_lines = 0;
 
 std::string storage::file_name_op = "";
 
@@ -20,7 +22,7 @@ storage::storage() {}
 esp_err_t storage::init_spiffs() {
   esp_vfs_spiffs_conf_t conf = {.base_path = "/storage",
                                 .partition_label = NULL,
-                                .max_files = 5,
+                                .max_files = 2,
                                 .format_if_mount_failed = true};
 
   esp_err_t ret = esp_vfs_spiffs_register(&conf);
@@ -31,6 +33,17 @@ esp_err_t storage::init_spiffs() {
   }
   ESP_LOGI(TAG, "SPIFFS initialized");
   files = list_files();
+  line_number = 0;
+  // Check if file exe_g is present and create it if not
+  if (std::find(files.begin(), files.end(), "exe_g.txt") == files.end()) {
+    create_file("exe_g.txt");
+    close_file();
+  }
+  // Check if file log.txt is present and create it if not
+  if (std::find(files.begin(), files.end(), "log.txt") == files.end()) {
+    create_file("log.txt");
+    close_file();
+  }
   ESP_LOGI(TAG, "Files: %d", file_count);
   return ESP_OK;
 }
@@ -45,13 +58,15 @@ esp_err_t storage::open_file(std::string file_name, const char* mode) {
     return ESP_FAIL;
   }
   std::string path_file = dir + file_name;
-
+  line_number = 0;
   file = fopen(path_file.c_str(), mode);
   if (file == NULL) {
     ESP_LOGE(TAG, "Failed to open file : %s", file_name.c_str());
     return ESP_FAIL;
   }
   file_name_op = file_name;
+  if (mode[0] == 'r')
+    num_lines();
   return ESP_OK;
 }
 
@@ -75,12 +90,12 @@ esp_err_t storage::read_line(char* buffer, size_t len) {
   if (fgets(buffer, len, file) != NULL) {
   } else if (feof(file)) {
     ESP_LOGI(TAG, "End of file");
-    return ESP_FAIL;
+    return ESP_ERR_INVALID_SIZE;
   } else {
     ESP_LOGE(TAG, "Failed to read from file : %s", file_name_op.c_str());
     return ESP_FAIL;
   }
-
+  line_number++;
   return ESP_OK;
 }
 
@@ -93,7 +108,7 @@ esp_err_t storage::write_file(const char* content) {
     ESP_LOGE(TAG, "Failed to write in file : %s", file_name_op.c_str());
     return ESP_FAIL;
   }
-
+  line_number++;
   return ESP_OK;
 }
 
@@ -117,10 +132,6 @@ esp_err_t storage::create_file(std::string file_name) {
     ESP_LOGE(TAG, "File already exists : %s", file_name.c_str());
     return ESP_FAIL;
   }
-  if (file_count >= 5) {
-    ESP_LOGE(TAG, "Max files reached");
-    return ESP_FAIL;
-  }
   std::string path_file = dir + file_name;
 
   file = fopen(path_file.c_str(), "w");
@@ -131,6 +142,7 @@ esp_err_t storage::create_file(std::string file_name) {
   }
   file_count++;
   file_name_op = file_name;
+  line_number = 0;
   ESP_LOGI(TAG, "File created : %s", file_name.c_str());
   return ESP_OK;
 }
@@ -158,6 +170,22 @@ size_t storage::Remaing_space() {
   esp_spiffs_info(NULL, &total, &used);
   ESP_LOGI(TAG, "Total: %d, Used: %d", total, used);
   return total - used;
+}
+
+void storage::num_lines() {
+  if (file == NULL) {
+    ESP_LOGE(TAG, "Failed to open file for reading // there is no file open");
+    return;
+  }
+  fseek(file, 0, SEEK_SET);  // Reset the cursor to the first line
+  int counter = 0;
+  char buffer[100];
+  while (fgets(buffer, 100, file) != NULL) {
+    counter++;
+  }
+  total_lines = counter;
+  ESP_LOGI(TAG, "Number of lines: %d", counter);
+  fseek(file, 0, SEEK_SET);  // Reset the cursor to the first line
 }
 
 }  // namespace nm_storage

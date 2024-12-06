@@ -11,7 +11,7 @@
 namespace engine {
 
 enum Motion { G0, G1, G2, G3 };
-enum Status { IDLE, RUNNING, PAUSED, ERROR };
+enum State { IDLE, RUNNING, PAUSED, HOMING, STOPPED };
 enum Error { NO_ERROR, INVALID_COMMAND };
 enum Step_resolution { FULL, HALF, QUARTER, EIGHTH, SIXTEENTH };
 
@@ -72,7 +72,7 @@ class cnc {
   } config;
 
   struct {
-    Status sys_status;
+    State sys_state;
     Error sys_error;
     coord_t sys_coord;
   } status;
