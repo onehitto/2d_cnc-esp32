@@ -6,6 +6,7 @@
 #include <iostream>
 #include <ostream>
 #include <sstream>
+#include "cnc_timer.h"
 #include "webserver.h"
 
 namespace engine {
@@ -45,10 +46,6 @@ class cnc {
   ~cnc();
 
   void cnc_init();
-  // init gpio IO + PWM + timer to drive Motors + LED
-  // void cnc_hardware_init();
-  // // read and write a file
-  // void cnc_file_sys_init();
 
   void cnc_parser(std::string& line);
   void cnc_cal_block();

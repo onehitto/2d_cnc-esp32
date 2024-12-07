@@ -44,6 +44,8 @@ void cnc::cnc_init() {
   webserver::queue = cnc_command_queue;
   ESP_ERROR_CHECK(storage::init_spiffs());
   webserver::webserver_init();
+
+  cnc_timer cnc_hw;
 }
 
 int cnc::cnc_config_cmd(char conf_n, std::string& line, int start) {
