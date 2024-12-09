@@ -6,4 +6,17 @@ set(SOURCES
 )
 
 idf_component_register(SRCS ${SOURCES}
-    INCLUDE_DIRS ${INCLUDE_DIR} REQUIRES esp_http_server esp_event esp_wifi esp_common nvs_flash esp-tls esp_hw_support components spiffs driver)
+    INCLUDE_DIRS ${INCLUDE_DIR} 
+    REQUIRES 
+    esp_http_server 
+    esp_event 
+    esp_wifi 
+    esp_common 
+    nvs_flash 
+    esp-tls 
+    esp_hw_support 
+    components 
+    spiffs 
+    driver 
+    freertos 
+    esp_timer)

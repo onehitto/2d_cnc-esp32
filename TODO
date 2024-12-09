@@ -2,14 +2,14 @@
 cnc:
   ✔ 1. G0/G1 parser @done(24-11-26 22:13)
   ✔ 2. G2/G3 parser @done(24-11-26 22:13)
-  ☐ 3. Implement timer for stepper motor
+  ✔ 3. Implement timer for stepper motor @done(24-12-09 09:29)
   ☐ 4. Implement GPIO to control stepper motor /  PWM server motor / sensor
   ☐ 5. Implemtent event loop for cnc machine @started(24-12-04 22:45)
   ☐ 6. Implement homing
   webserver:
     ✔ 1. Implement a webserver that can save the wifi credentials to nvs @done(24-11-26 21:58)
-    ☐ 2. Open a web socket that control/monitor the cnc machine @started(24-12-04 22:45)
-    ☐ 3. Implement a webserver that can list files in storage / upload file to storage / download log file from storage
+    ✔ 2. Open a web socket that control/monitor the cnc machine @started(24-12-04 22:45) @done(24-12-09 09:28) @lasted(4d10h44m)
+    ✔ 3. Implement a webserver that can list files in storage / upload file to storage @done(24-12-09 09:29)
     wifi:
       ✔ 1. Read nvs for creadentials if unfound wifi setup as AP , and open webserver port 4397 , if creadentials are set/saved in nvs restart as STA @done(24-11-26 21:45)
   storage: 

@@ -16,7 +16,7 @@ struct cnc_command_t {
   int sock_fd;
 };
 
-cnc::cnc() {
+cnc::cnc() : timer(cnc_callback, this), count(0) {
   memset(&block_to_exe, 0, sizeof(block_t));
   memset(&next_block, 0, sizeof(block_t));
 
@@ -39,13 +39,12 @@ cnc::cnc() {
 cnc::~cnc() {}
 
 void cnc::cnc_init() {
-  // init webserver (wifi nvs webserver)
+  // init webserver(wifi nvs webserver)
   cnc_command_queue = xQueueCreate(10, sizeof(cnc_command_t));
   webserver::queue = cnc_command_queue;
   ESP_ERROR_CHECK(storage::init_spiffs());
   webserver::webserver_init();
-
-  cnc_timer cnc_hw;
+  timer.start_timer(1000);
 }
 
 int cnc::cnc_config_cmd(char conf_n, std::string& line, int start) {
@@ -292,7 +291,25 @@ void cnc::cnc_cal_block() {
   block_to_exe.step_count = step_count;
 }
 
-void cnc::cnc_exe_handler() {
+bool cnc::cnc_callback(gptimer_handle_t gptimer,
+                       const gptimer_alarm_event_data_t* edata,
+                       void* user_data) {
+  cnc* self = static_cast<cnc*>(user_data);
+  if (self == nullptr) {
+    gptimer_stop(gptimer);
+    return false;
+  }
+  if (self->dutychange) {
+    self->dutychange = false;
+    self->timer.set_alarm_value(self->feedrate);
+  }
+  if (self->first_half) {
+    self->first_half = false;
+
+  } else {
+    self->first_half = true;
+  }
+  /*
   if (block_to_exe.motion == G0 || block_to_exe.motion == G1) {
     //  Calculate the number of steps to move and calculate the time to
     //  execute block
@@ -420,6 +437,35 @@ void cnc::cnc_exe_handler() {
       }
     }
   }
+  */
+  timer_queue_t evt;
+  strncpy(evt.name, "timer1", sizeof(evt.name) - 1);
+  evt.name[sizeof(evt.name) - 1] = '\0';  // Ensure null-termination
+  evt.timestamp = esp_timer_get_time();
+  evt.count = 1;
+  self->count++;
+
+  if (self->count == 17) {
+    self->timer.stop_timer();
+  } else if (self->count == 15) {
+    self->timer.set_alarm_value(10000);
+  } else if (self->count == 10) {
+    self->timer.set_alarm_value(5000);
+  } else if (self->count == 5) {
+    self->timer.set_alarm_value(3000);
+  }
+
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  xQueueSendFromISR(cnc_timer::timer_event_queue, &evt,
+                    &xHigherPriorityTaskWoken);
+
+  // If sending to the queue caused a task to unblock and a higher priority
+  // task should run now, request a context switch.
+  if (xHigherPriorityTaskWoken == pdTRUE) {
+    portYIELD_FROM_ISR();
+  }
+
+  return false;
 }
 
 void cnc::cnc_task_entry(void* arg) {
@@ -431,57 +477,63 @@ void cnc::cnc_task_entry(void* arg) {
 
 void cnc::cnc_task() {
   cnc_command_t cmd;
+  timer_queue_t evt;
   char response[256];
 
   ESP_LOGI(TAG, "CNC Task started");
 
   while (true) {
     // Wait indefinitely for a command
-    if (xQueueReceive(cnc_command_queue, &cmd, portMAX_DELAY)) {
-      memset(response, 0, sizeof(response));
-      ESP_LOGI(TAG, "Received command: %d", cmd.command);
-      // Process the command
-      if (cmd.command == GET_STATUS) {
-        snprintf(response, sizeof(response),
-                 "{\"sys_state\":\"%s\",\"sys_error\":\"good\",\"x\":\"%.2f\","
-                 "\"y\":\"%.2f\",\"mm_per_step_xy\":\"%.3f\",\"mm_per_step_"
-                 "diag\":\"%.3f\"}",
-                 status.sys_state == IDLE ? "Idle" : "Busy", status.sys_coord.x,
-                 status.sys_coord.y, config.mm_per_step_xy,
-                 config.mm_per_step_diag);
-      } else if (cmd.command == EXECUTE_GCODE) {
-        std::string gcode_command = cmd.content;
-        snprintf(response, 128, "{\"type\":\"execute_gcode\",\"file\":\"%s\"}",
-                 gcode_command.c_str());
-      } else if (cmd.command == CONFIG) {
-        std::string config = cmd.content;
-        snprintf(response, 128, "{\"type\":\"config\",\"file\":\"%s\"}",
-                 config.c_str());
-      } else if (cmd.command == RUN_FILE) {
-        ESP_LOGI(TAG, "-->RUN_FILE ");
-        storage::open_file("exe_g.txt", "r");
-        storage::close_file();
-        ESP_LOGI(TAG, "File upload complete total_line : %d",
-                 storage::total_lines);
-      } else if (cmd.command == PAUSE) {
-        ESP_LOGI(TAG, "-->PAUSE ");
-      } else if (cmd.command == RESUME) {
-        ESP_LOGI(TAG, "-->RESUME ");
-      } else if (cmd.command == STOP) {
-        ESP_LOGI(TAG, "-->STOP ");
-      } else {
-        snprintf(response, sizeof(response),
-                 "{\"status\":\"error\",\"message\":\"Unknown command\"}");
-      }
-      if (strlen(response) > 0) {
-        esp_err_t ret = webserver::ws_send(webserver::server, cmd.sock_fd,
-                                           response, strlen(response));
-        if (ret != ESP_OK) {
-          ESP_LOGE(TAG, "Failed to send WebSocket message: %s",
-                   esp_err_to_name(ret));
-        }
-      }
-      // Add additional command handling as needed
+    if (xQueueReceive(cnc_timer::timer_event_queue, &evt, portMAX_DELAY)) {
+      ESP_LOGI("TIMER_EVENT", "Timer %s interrupt at %lld us, count: %d",
+               evt.name, evt.timestamp, evt.count);
     }
+    // if (xQueueReceive(cnc_command_queue, &cmd, portMAX_DELAY)) {
+    //   memset(response, 0, sizeof(response));
+    //   ESP_LOGI(TAG, "Received command: %d", cmd.command);
+    //   // Process the command
+    //   if (cmd.command == GET_STATUS) {
+    //     snprintf(response, sizeof(response),
+    //              "{\"sys_state\":\"%s\",\"sys_error\":\"good\",\"x\":\"%.2f\","
+    //              "\"y\":\"%.2f\",\"mm_per_step_xy\":\"%.3f\",\"mm_per_step_"
+    //              "diag\":\"%.3f\"}",
+    //              status.sys_state == IDLE ? "Idle" : "Busy",
+    //              status.sys_coord.x, status.sys_coord.y,
+    //              config.mm_per_step_xy, config.mm_per_step_diag);
+    //   } else if (cmd.command == EXECUTE_GCODE) {
+    //     std::string gcode_command = cmd.content;
+    //     snprintf(response, 128,
+    //     "{\"type\":\"execute_gcode\",\"file\":\"%s\"}",
+    //              gcode_command.c_str());
+    //   } else if (cmd.command == CONFIG) {
+    //     std::string config = cmd.content;
+    //     snprintf(response, 128, "{\"type\":\"config\",\"file\":\"%s\"}",
+    //              config.c_str());
+    //   } else if (cmd.command == RUN_FILE) {
+    //     ESP_LOGI(TAG, "-->RUN_FILE ");
+    //     storage::open_file("exe_g.txt", "r");
+    //     storage::close_file();
+    //     ESP_LOGI(TAG, "File upload complete total_line : %d",
+    //              storage::total_lines);
+    //   } else if (cmd.command == PAUSE) {
+    //     ESP_LOGI(TAG, "-->PAUSE ");
+    //   } else if (cmd.command == RESUME) {
+    //     ESP_LOGI(TAG, "-->RESUME ");
+    //   } else if (cmd.command == STOP) {
+    //     ESP_LOGI(TAG, "-->STOP ");
+    //   } else {
+    //     snprintf(response, sizeof(response),
+    //              "{\"status\":\"error\",\"message\":\"Unknown command\"}");
+    //   }
+    //   if (strlen(response) > 0) {
+    //     esp_err_t ret = webserver::ws_send(webserver::server, cmd.sock_fd,
+    //                                        response, strlen(response));
+    //     if (ret != ESP_OK) {
+    //       ESP_LOGE(TAG, "Failed to send WebSocket message: %s",
+    //                esp_err_to_name(ret));
+    //     }
+    //   }
+    //   // Add additional command handling as needed
+    // }
   }
 }
