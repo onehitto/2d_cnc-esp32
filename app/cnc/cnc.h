@@ -6,6 +6,7 @@
 #include <iostream>
 #include <ostream>
 #include <sstream>
+#include "cnc_gpio.h"
 #include "cnc_timer.h"
 #include "webserver.h"
 
@@ -65,6 +66,7 @@ class cnc {
   void cnc_cal_block();
   int cnc_config_cmd(char conf_n, std::string& line, int start);
 
+  int feedrate_to_alarm(int feedrate);
   // execute
   static bool cnc_callback(gptimer_handle_t gptimer,
                            const gptimer_alarm_event_data_t* edata,
@@ -82,6 +84,7 @@ class cnc {
   config_t config;
   status_t status;
 
+  cnc_gpio gpio;
   cnc_timer timer;
   int count;
   static network::webserver ws;
@@ -89,5 +92,7 @@ class cnc {
 
  private:
   bool first_half;
+  bool alarmchange;
+  int alarmvalue;
 };
 }  // namespace engine

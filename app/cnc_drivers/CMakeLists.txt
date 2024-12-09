@@ -3,6 +3,7 @@ set(SOURCES
     src/webserver.cc
     src/storage.cc
     src/cnc_timer.cc
+    src/cnc_gpio.cc
 )
 
 idf_component_register(SRCS ${SOURCES}
