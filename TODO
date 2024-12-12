@@ -74,7 +74,7 @@ cnc scenario
     {"type":"stop"} -> {"response":"ok/fail/error","err_msg":""}
     {"type":"get_status"} -> {"response":"ok","err_msg":"","content":{"sys_state":"idle/rdy","line_number":number,
         ,"x":number,"y":number,"resolution":number,"speed":number}}
-    {"type":"exe_gcode","data":"gcode"} -> {"response":"ok/fail/error","err_msg":""}
+    {"type":"exe_gcode","data":"gcode"} -> {"response":"ok/fail/error","err_msg":"","content":{"step_count":block_exe.step_count}}
     {"type":"config","data":"data"} -> {"response":"ok/fail/error","err_msg":""}
 
     to discuss {"type":"get_log"} -> {"response":"ok","err_msg":"","content":"log"}

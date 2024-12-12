@@ -32,7 +32,6 @@ typedef struct {
     float m;
     float A, B, C;
     float xForward, yForward;
-
   } linear;
   struct {
     float cx, cy;
@@ -45,6 +44,7 @@ typedef struct {
   Step_resolution step_resolution;
   float mm_per_step_xy;
   float mm_per_step_diag;
+  int alarmvalue;
 } config_t;
 
 typedef struct {
@@ -66,7 +66,7 @@ class cnc {
   void cnc_cal_block();
   int cnc_config_cmd(char conf_n, std::string& line, int start);
 
-  int feedrate_to_alarm(int feedrate);
+  void set_feedrate(int feedrate);
   // execute
   static bool cnc_callback(gptimer_handle_t gptimer,
                            const gptimer_alarm_event_data_t* edata,
@@ -86,13 +86,12 @@ class cnc {
 
   cnc_gpio gpio;
   cnc_timer timer;
-  int count;
+
   static network::webserver ws;
   static nm_storage::storage storage;
 
  private:
   bool first_half;
   bool alarmchange;
-  int alarmvalue;
 };
 }  // namespace engine
