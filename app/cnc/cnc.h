@@ -8,6 +8,8 @@
 #include <sstream>
 #include "cnc_gpio.h"
 #include "cnc_timer.h"
+#include "freertos/event_groups.h"
+#include "freertos/queue.h"
 #include "webserver.h"
 
 namespace engine {
@@ -16,6 +18,8 @@ enum Motion { G0, G1, G2, G3 };
 enum State { IDLE, RUNNING, PAUSED, HOMING, STOPPED };
 enum Error { NO_ERROR, INVALID_COMMAND };
 enum Step_resolution { FULL, HALF, QUARTER, EIGHTH, SIXTEENTH };
+
+#define EVENT_NOTIFICATION (1 << 1)
 
 typedef struct {
   float x;
@@ -87,6 +91,8 @@ class cnc {
   cnc_gpio gpio;
   cnc_timer timer;
 
+  QueueHandle_t notif_queue;
+  static EventGroupHandle_t cnc_task_event_g;
   static network::webserver ws;
   static nm_storage::storage storage;
 

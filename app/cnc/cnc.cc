@@ -6,6 +6,7 @@ using namespace nm_storage;
 
 webserver ws;
 storage storage;
+EventGroupHandle_t cnc_task_event_g;
 
 #define TAG "CNC"
 #define MAX_CONTENT_LENGTH 100
@@ -17,12 +18,10 @@ struct cnc_command_t {
 };
 
 cnc::cnc()
-    : gpio(),
-      timer(cnc_callback, this),
-      ws(),
-      storage(),
-      first_half(true),
-      alarmchange(false) {
+    : gpio(), timer(cnc_callback, this), first_half(true), alarmchange(false) {
+  ws = webserver();
+  storage = storage();
+  // set the block to execute and the next block to zero
   memset(&block_to_exe, 0, sizeof(block_t));
   memset(&next_block, 0, sizeof(block_t));
 
@@ -41,6 +40,11 @@ cnc::cnc()
   // defaut feedrate = 400 mm/min , cannot be zero
   set_feedrate(400);
 
+  // event group to handle the cnc task
+  cnc_task_event_g = xEventGroupCreate();
+  // create a queue to send the notification
+  notif_queue = xQueueCreate(10, sizeof(uint8_t));
+
   log.str("");
 }
 
@@ -50,9 +54,9 @@ void cnc::cnc_init() {
   // init webserver(wifi nvs webserver)
   cnc_command_queue = xQueueCreate(10, sizeof(cnc_command_t));
   webserver::queue = cnc_command_queue;
+  webserver::event_group = cnc_task_event_g;
   ESP_ERROR_CHECK(storage::init_spiffs());
   webserver::webserver_init();
-  //   timer.start_timer(alarmvalue);
 }
 
 int cnc::cnc_config_cmd(char conf_n, std::string& line, int start) {
@@ -332,10 +336,10 @@ bool cnc::cnc_callback(gptimer_handle_t gptimer,
         //  execute block
         //  the line eqution that pass through the two points is Ax + By + C =0
         //  :
-        float dx = block_to_exe.linear.dx;
-        float dy = block_to_exe.linear.dy;
-        float xForward = block_to_exe.linear.xForward;
-        float yForward = block_to_exe.linear.yForward;
+        float& dx = block_to_exe.linear.dx;
+        float& dy = block_to_exe.linear.dy;
+        float& xForward = block_to_exe.linear.xForward;
+        float& yForward = block_to_exe.linear.yForward;
 
         if (dx == 0) {
           //  - if the line is vertical x = x0 dont need to calculate the
@@ -367,9 +371,9 @@ bool cnc::cnc_callback(gptimer_handle_t gptimer,
           //     B = x1 - x0
           //     C = (y1 - y0) * x0 - (x1 -x0) * y0
 
-          float A = block_to_exe.linear.A;
-          float B = block_to_exe.linear.B;
-          float C = block_to_exe.linear.C;
+          float& A = block_to_exe.linear.A;
+          float& B = block_to_exe.linear.B;
+          float& C = block_to_exe.linear.C;
 
           if (fabsf(status.sys_coord.x - block_to_exe.coord.x) >
                   config.mm_per_step_xy ||
@@ -403,9 +407,9 @@ bool cnc::cnc_callback(gptimer_handle_t gptimer,
       } else if (block_to_exe.motion == G2 || block_to_exe.motion == G3) {
         // calculate the centre of the circle
 
-        float cx = block_to_exe.arc.cx;
-        float cy = block_to_exe.arc.cy;
-        float r = block_to_exe.arc.r;
+        float& cx = block_to_exe.arc.cx;
+        float& cy = block_to_exe.arc.cy;
+        float& r = block_to_exe.arc.r;
 
         float xForward(0.0);
         float yForward(0.0);
@@ -465,6 +469,18 @@ bool cnc::cnc_callback(gptimer_handle_t gptimer,
       self->timer.stop_timer();
       self->status.sys_state = IDLE;
       self->first_half = true;
+      uint8_t id_notif = {1};
+      // send event data to the queue from ISR
+      BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+      xQueueSendFromISR(self->notif_queue, &id_notif,
+                        &xHigherPriorityTaskWoken);
+      // send a Notification to the cnc task
+      xEventGroupSetBitsFromISR(cnc_task_event_g, EVENT_NOTIFICATION,
+                                &xHigherPriorityTaskWoken);
+      BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+      if (xHigherPriorityTaskWoken == pdTRUE) {
+        portYIELD_FROM_ISR();
+      }
     }
   } else {
     self->first_half = true;
@@ -489,66 +505,78 @@ void cnc::set_feedrate(int feedrate) {
 
 void cnc::cnc_task() {
   cnc_command_t cmd;
-  timer_queue_t evt;
+  uint8_t evt;
   char response[256];
 
   ESP_LOGI(TAG, "CNC Task started");
 
+  // todo :trigger a homing sequence
+
   while (true) {
     // Wait indefinitely for a command
-
-    if (xQueueReceive(cnc_command_queue, &cmd, portMAX_DELAY)) {
-      memset(response, 0, sizeof(response));
-      ESP_LOGI(TAG, "Received command: %d", cmd.command);
-      // Process the command
-      if (cmd.command == GET_STATUS) {
-        snprintf(response, sizeof(response),
+    EventBits_t bits =
+        xEventGroupWaitBits(cnc_task_event_g, EVENT_CMD | EVENT_NOTIFICATION,
+                            pdTRUE,        // Clear the bits before returning
+                            pdFALSE,       // Wait for any bit
+                            portMAX_DELAY  // Wait indefinitely
+        );
+    if (bits & EVENT_CMD) {
+      if (xQueueReceive(cnc_command_queue, &cmd, 0)) {
+        memset(response, 0, sizeof(response));
+        ESP_LOGI(TAG, "Received command: %d", cmd.command);
+        // Process the command
+        if (cmd.command == GET_STATUS) {
+          snprintf(response, sizeof(response),
                  "{\"response\":\"ok\",\"err_msg\":\"\",\"content\":{\"sys_state\":%d,\"line_number\":%d,
         ,\"x\":%.4f,\"y\":%.4f,\"resolution\":%d,\"speed\":%d,\"tick_timer\":%d,\"mm_per_step_"
                  "diag\":%.4f}}",
                  status.sys_state, storage.line_number, status.sys_coord.x,
                  status.sys_coord.y, config.step_resolution, block_to_exe.feedrate,config.alarmvalue,config.mm_per_step_diag);
-      } else if (cmd.command == EXECUTE_GCODE && status.sys_state == IDLE) {
-        std::string gcode_command = cmd.content;
-        cnc_parser(gcode_command);
-        cnc_cal_block();
-        snprintf(response, sizeof(response),
-                 "{\"response\":\"ok\",\"err_msg\":\"\",\"content\":{"
-                 "\"numberofsteps\":%d}}",
-                 block_exe.step_count);
-        status.sys_state = RUNNING;
-        timer.start_timer(config.alarmvalue);
-      } else if (cmd.command == CONFIG && status.sys_state == IDLE) {
-        // todo
-        std::string config = cmd.content;
-        snprintf(response, 128, "{\"type\":\"config\",\"file\":\"%s\"}",
-                 config.c_str());
-      } else if (cmd.command == RUN_FILE && status.sys_state == IDLE) {
-        ESP_LOGI(TAG, "-->RUN_FILE ");
-        storage::open_file("exe_g.txt", "r");
-        storage::close_file();
-        ESP_LOGI(TAG, "File upload complete total_line : %d",
-                 storage::total_lines);
-      } else if (cmd.command == PAUSE && status.sys_state == RUNNING) {
-        ESP_LOGI(TAG, "-->PAUSE ");
-      } else if (cmd.command == RESUME && status.sys_state == PAUSED) {
-        ESP_LOGI(TAG, "-->RESUME ");
-      } else if (cmd.command == STOP &&
-                 (status.sys_state == PAUSED || status.sys_state == RUNNING)) {
-        ESP_LOGI(TAG, "-->STOP ");
-      } else {
-        snprintf(response, sizeof(response),
-                 "{\"status\":\"error\",\"message\":\"Unknown command\"}");
-      }
-      if (strlen(response) > 0) {
-        esp_err_t ret = webserver::ws_send(webserver::server, cmd.sock_fd,
-                                           response, strlen(response));
-        if (ret != ESP_OK) {
-          ESP_LOGE(TAG, "Failed to send WebSocket message: %s",
-                   esp_err_to_name(ret));
+        } else if (cmd.command == EXECUTE_GCODE && status.sys_state == IDLE) {
+          std::string gcode_command = cmd.content;
+          cnc_parser(gcode_command);
+          cnc_cal_block();
+          snprintf(response, sizeof(response),
+                   "{\"response\":\"ok\",\"err_msg\":\"\",\"content\":{"
+                   "\"numberofsteps\":%d}}",
+                   block_exe.step_count);
+          status.sys_state = RUNNING;
+          timer.start_timer(config.alarmvalue);
+        } else if (cmd.command == CONFIG && status.sys_state == IDLE) {
+          // todo
+          std::string config = cmd.content;
+          snprintf(response, sizeof(response),
+                   "{\"response\":\"ok\",\"err_msg\":\"\",\"content\":{}}");
+        } else if (cmd.command == RUN_FILE && status.sys_state == IDLE) {
+          ESP_LOGI(TAG, "-->RUN_FILE ");
+          storage::open_file("exe_g.txt", "r");
+          storage::close_file();
+          ESP_LOGI(TAG, "File upload complete total_line : %d",
+                   storage::total_lines);
+        } else if (cmd.command == PAUSE && status.sys_state == RUNNING) {
+          ESP_LOGI(TAG, "-->PAUSE ");
+        } else if (cmd.command == RESUME && status.sys_state == PAUSED) {
+          ESP_LOGI(TAG, "-->RESUME ");
+        } else if (cmd.command == STOP && (status.sys_state == PAUSED ||
+                                           status.sys_state == RUNNING)) {
+          ESP_LOGI(TAG, "-->STOP ");
+        } else {
+          snprintf(response, sizeof(response),
+                   "{\"status\":\"error\",\"message\":\"Unknown command\"}");
         }
+        if (strlen(response) > 0) {
+          esp_err_t ret = webserver::ws_send(webserver::server, cmd.sock_fd,
+                                             response, strlen(response));
+          if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to send WebSocket message: %s",
+                     esp_err_to_name(ret));
+          }
+        }
+        // Add additional command handling as needed
       }
-      // Add additional command handling as needed
+    } else if (bits & EVENT_NOTIFICATION) {
+      if (xQueueReceive(notif_queue, &evt, 0)) {
+      }
     }
   }
 }

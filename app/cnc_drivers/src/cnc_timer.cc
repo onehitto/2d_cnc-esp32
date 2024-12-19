@@ -37,7 +37,7 @@ cnc_timer::cnc_timer(gptimer_alarm_cb_t callback, void* user_data)
   // Increment the number of timers
   number_of_timers++;
 }
-
+/*
 bool cnc_timer::test_cb(gptimer_handle_t gptimer,
                         const gptimer_alarm_event_data_t* edata,
                         void* user_data) {
@@ -74,7 +74,7 @@ bool cnc_timer::test_cb(gptimer_handle_t gptimer,
   }
 
   return false;
-}
+}*/
 
 void cnc_timer::start_timer(int x_ms) {
   // Reset the timer counter

@@ -7,9 +7,9 @@ using namespace nm_storage;
 #define MAX_WS_PAYLOAD_LEN 2500  // Set a maximum length (1 KB in this example)
 #define MAX_CONTENT_LENGTH 100
 
-#define RESP_MSG(buffer, buffer_size, resp, err, c)                       \
-  snprintf(buffer, buffer_size,                                           \
-           "{\"response\":\"%s\",\"err_msg\":\"%s\",\"content\":\"%s\"}", \
+#define RESP_MSG(buffer, buffer_size, resp, err, c)                         \
+  snprintf(buffer, buffer_size,                                             \
+           "{\"response\":\"%s\",\"err_msg\":\"%s\",\"content\":\"{%s}\"}", \
            resp, err, c)
 
 struct cnc_command_t {
@@ -34,6 +34,7 @@ char webserver::password_buffer[64] = {0};
 bool webserver::credentials_valid = false;
 
 QueueHandle_t webserver::queue;
+EventGroupHandle_t webserver::event_group;
 
 // WebSocket frames
 httpd_ws_frame_t msg_frame = {.final = true,
@@ -371,36 +372,32 @@ esp_err_t webserver::process_ws_message(httpd_req_t* req, const char* message) {
 
     if (chunk == 1) {
       if (ESP_OK != storage::open_file("exe_g.txt", "w")) {
-        RESP_MSG(msg, sizeof(msg), "error", "open file exe_g failed",
-                 "Failed to open file for writing");
+        RESP_MSG(msg, sizeof(msg), "error", "open file exe_g failed", "");
         ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
         cJSON_Delete(json);
         return ESP_FAIL;
       }
       if (ESP_OK != storage::write_file(data)) {
-        RESP_MSG(msg, sizeof(msg), "error", "write file exe_g failed",
-                 "Failed to write to file");
+        RESP_MSG(msg, sizeof(msg), "error", "write file exe_g failed", "");
         ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
         cJSON_Delete(json);
         return ESP_FAIL;
       }
       file_upload_state.current_chunk = chunk;
       file_upload_state.total_chunks = total_chunks;
-      RESP_MSG(msg, sizeof(msg), "success", "", "Chunk received");
+      RESP_MSG(msg, sizeof(msg), "success", "Chunk received", "");
       ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
     } else {
       if (chunk != file_upload_state.current_chunk + 1) {
         ESP_LOGE(TAG, "Received out-of-order chunk %d (expected %d)", chunk,
                  file_upload_state.current_chunk + 1);
-        RESP_MSG(msg, sizeof(msg), "error", "Out-of-order chunk",
-                 "Received out-of-order chunk");
+        RESP_MSG(msg, sizeof(msg), "error", "Out-of-order chunk", "");
         ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
         cJSON_Delete(json);
         return ESP_FAIL;
       }
       if (ESP_OK != storage::write_file(data)) {
-        RESP_MSG(msg, sizeof(msg), "error", "write file exe_g failed",
-                 "Failed to write to file");
+        RESP_MSG(msg, sizeof(msg), "error", "write file exe_g failed", "");
         ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
         cJSON_Delete(json);
         return ESP_FAIL;
@@ -412,7 +409,7 @@ esp_err_t webserver::process_ws_message(httpd_req_t* req, const char* message) {
         RESP_MSG(msg, sizeof(msg), "success", "File upload complete", "");
         ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
       } else {
-        RESP_MSG(msg, sizeof(msg), "success", "", "Chunk received");
+        RESP_MSG(msg, sizeof(msg), "success", "Chunk received", "");
         ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
       }
     }
@@ -427,10 +424,13 @@ esp_err_t webserver::process_ws_message(httpd_req_t* req, const char* message) {
   // Send the command to the CNC task via the queue
   if (xQueueSend(queue, &cmd, 0) != pdPASS) {
     char msg[256];
-    RESP_MSG(msg, sizeof(msg), "error", "Send Queue failed",
-             "Failed to send command to CNC task");
+    RESP_MSG(msg, sizeof(msg), "error", "Failed to send command to CNC task",
+             "");
     ws_send(req->handle, httpd_req_to_sockfd(req), msg, strlen(msg));
   }
+
+  // send event to the CNC task
+  xEventGroupSetBits(event_group, EVENT_CMD);
 
   cJSON_Delete(json);
   return ESP_OK;

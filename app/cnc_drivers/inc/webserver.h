@@ -25,6 +25,8 @@
 #define GET_STATUS 6
 #define CONFIG 7
 
+#define EVENT_CMD (1 << 0)
+
 namespace network {
 
 struct file_upload_state_t {
@@ -73,6 +75,7 @@ class webserver {
                        const char* content);
 
   static QueueHandle_t queue;
+  static EventGroupHandle_t event_group;
   //  private:
   static char ssid_buffer[32];
   static char password_buffer[64];

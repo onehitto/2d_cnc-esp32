@@ -20,10 +20,10 @@ class cnc_timer {
  public:
   cnc_timer(gptimer_alarm_cb_t callback, void* user_data);
   ~cnc_timer();
-  static bool test_cb(gptimer_handle_t gptimer,
+  /*static bool test_cb(gptimer_handle_t gptimer,
                       const gptimer_alarm_event_data_t* edata,
                       void* user_data);
-
+*/
   void start_timer(int x_ms);
   void stop_timer();
   void set_alarm_value(int x_ms);
